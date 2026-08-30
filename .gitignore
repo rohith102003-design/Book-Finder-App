@@ -1,0 +1,29 @@
+# Node & Frontend
+node_modules/
+build/
+.pnp
+.pnp.js
+coverage/
+
+# Python & Backend
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.*.local
+
+# SQLite Local DB files
+*.db
+*.sqlite3
+
+# OS Files
+.DS_Store
+Thumbs.db
