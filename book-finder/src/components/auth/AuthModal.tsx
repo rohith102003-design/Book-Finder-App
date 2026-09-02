@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X,
@@ -31,6 +31,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
     closeAuthModal,
     openAuthModal,
     login,
+    loginWithGoogle,
     register,
     verifyEmail,
     resendVerification,
@@ -48,6 +49,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
   const [showPassword, setShowPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [isResending, setIsResending] = useState(false);
   const [resendCooldown, setResendCooldown] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -56,6 +58,120 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
 
   // Forgot password sub-step: 'request' | 'reset' | 'completed'
   const [forgotStep, setForgotStep] = useState<'request' | 'reset' | 'completed'>('request');
+
+  const googleClientId = process.env.REACT_APP_GOOGLE_CLIENT_ID || '';
+
+  // Google OAuth credential callback
+  const handleGoogleCredentialResponse = useCallback(
+    async (response: { credential: string }) => {
+      if (!response.credential) {
+        setErrorMessage('Google authentication failed. No credential received.');
+        setIsGoogleLoading(false);
+        return;
+      }
+
+      setIsGoogleLoading(true);
+      setErrorMessage(null);
+      try {
+        await loginWithGoogle(response.credential, googleClientId);
+      } catch (err: unknown) {
+        if (axios.isAxiosError(err)) {
+          setErrorMessage(
+            err.response?.data?.error?.message ||
+              err.response?.data?.detail ||
+              'Google authentication failed. Please try again.'
+          );
+        } else if (err instanceof Error) {
+          setErrorMessage(err.message);
+        } else {
+          setErrorMessage('Google authentication failed. Please try again.');
+        }
+      } finally {
+        setIsGoogleLoading(false);
+      }
+    },
+    [googleClientId, loginWithGoogle]
+  );
+
+  // Initialize Google Identity Services SDK
+  useEffect(() => {
+    if (!isAuthModalOpen) return;
+
+    // Dynamically load Google Identity Services script if not already on page
+    const existingScript = document.getElementById('google-jssdk');
+    if (!existingScript) {
+      const script = document.createElement('script');
+      script.id = 'google-jssdk';
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      script.onload = () => {
+        if (googleClientId && window.google?.accounts?.id) {
+          window.google.accounts.id.initialize({
+            client_id: googleClientId,
+            callback: handleGoogleCredentialResponse,
+            cancel_on_tap_outside: true,
+          });
+        }
+      };
+      document.body.appendChild(script);
+    } else if (googleClientId && window.google?.accounts?.id) {
+      window.google.accounts.id.initialize({
+        client_id: googleClientId,
+        callback: handleGoogleCredentialResponse,
+        cancel_on_tap_outside: true,
+      });
+    }
+  }, [isAuthModalOpen, googleClientId, handleGoogleCredentialResponse]);
+
+  // Handle "Continue with Google" click
+  const handleGoogleSignInClick = () => {
+    setErrorMessage(null);
+
+    if (!googleClientId) {
+      setErrorMessage(
+        'Google Sign-In is not configured yet. Please set REACT_APP_GOOGLE_CLIENT_ID in your environment.'
+      );
+      return;
+    }
+
+    if (!window.google?.accounts?.id) {
+      setErrorMessage('Google Sign-In service is initializing. Please try again in a moment.');
+      return;
+    }
+
+    setIsGoogleLoading(true);
+
+    try {
+      window.google.accounts.id.prompt((notification) => {
+        if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+          // If prompt was skipped or not displayed (e.g., third party cookies blocked), fallback to token client
+          if (window.google?.accounts?.oauth2) {
+            const tokenClient = window.google.accounts.oauth2.initTokenClient({
+              client_id: googleClientId,
+              scope: 'email profile openid',
+              callback: async (tokenResp) => {
+                if (tokenResp.error || !tokenResp.access_token) {
+                  setIsGoogleLoading(false);
+                  if (tokenResp.error !== 'popup_closed_by_user') {
+                    setErrorMessage('Google authentication was cancelled or failed.');
+                  }
+                  return;
+                }
+                await handleGoogleCredentialResponse({ credential: tokenResp.access_token });
+              },
+            });
+            tokenClient.requestAccessToken();
+          } else {
+            setIsGoogleLoading(false);
+          }
+        }
+      });
+    } catch {
+      setIsGoogleLoading(false);
+      setErrorMessage('Google authentication could not be opened. Please try again.');
+    }
+  };
 
   // Reset form inputs when modal opens or tab changes
   useEffect(() => {
@@ -74,6 +190,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
       setErrorMessage(null);
       setSuccessMessage(null);
       setIsSubmitting(false);
+      setIsGoogleLoading(false);
       setIsResending(false);
       setUnverifiedLoginAttempt(false);
       setForgotStep('request');
@@ -115,6 +232,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addr.trim());
   };
 
+  // Gmail domain check
+  const isValidGmail = (addr: string) => {
+    const clean = addr.trim().toLowerCase();
+    return clean.endsWith('@gmail.com') || clean.endsWith('@googlemail.com');
+  };
+
   const handleStandardSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
@@ -131,6 +254,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
 
     if (!isValidEmail(trimmedEmail)) {
       setErrorMessage('Please enter a valid email address.');
+      return;
+    }
+
+    // Validate Gmail domain requirement
+    if (!isValidGmail(trimmedEmail)) {
+      setErrorMessage('Please use a Gmail address (@gmail.com) to create an account or sign in.');
       return;
     }
 
@@ -161,10 +290,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
       if (authModalTab === 'login') {
         await login(trimmedEmail, password);
       } else {
-        const regRes = await register(trimmedEmail, username.trim(), password);
-        // Switch to verification code screen
-        setSuccessMessage(regRes.message || 'Verification code sent to your email.');
-        openAuthModal('verify-email');
+        await register(trimmedEmail, username.trim(), password);
       }
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
@@ -222,18 +348,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
       } else if (err instanceof Error) {
         setErrorMessage(err.message);
       } else {
-        setErrorMessage('Failed to verify email.');
+        setErrorMessage('Verification failed. Please try again.');
       }
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Resend Verification Code
+  // Handle Resend Verification Code
   const handleResendCode = async () => {
     const trimmedEmail = email.trim().toLowerCase();
-    if (!trimmedEmail) {
-      setErrorMessage('Please enter your email address.');
+    if (!trimmedEmail || !isValidEmail(trimmedEmail)) {
+      setErrorMessage('Please enter a valid email address to resend code.');
       return;
     }
 
@@ -250,18 +376,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
             err.response?.data?.detail ||
             'Failed to resend verification code.'
         );
-      } else {
-        setErrorMessage('Failed to resend verification code.');
+      } else if (err instanceof Error) {
+        setErrorMessage(err.message);
       }
     } finally {
       setIsResending(false);
     }
   };
 
-  // Step 1 of Forgot Password: Request reset code/token
-  const handleRequestResetToken = async (e: React.FormEvent) => {
+  // Step 1: Request Password Reset Token
+  const handleForgotPasswordRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
+    setSuccessMessage(null);
 
     const trimmedEmail = email.trim().toLowerCase();
     if (!trimmedEmail || !isValidEmail(trimmedEmail)) {
@@ -272,61 +399,67 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
     setIsSubmitting(true);
     try {
       const res = await forgotPassword(trimmedEmail);
+      setSuccessMessage(res.message);
       if (res.reset_token) {
         setResetToken(res.reset_token);
       }
-      setSuccessMessage('Password reset verification code generated!');
       setForgotStep('reset');
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
         setErrorMessage(
           err.response?.data?.error?.message ||
             err.response?.data?.detail ||
-            'Unable to process password reset request.'
+            'Failed to request password reset.'
         );
+      } else if (err instanceof Error) {
+        setErrorMessage(err.message);
       } else {
-        setErrorMessage('Failed to request password reset code.');
+        setErrorMessage('An unexpected error occurred.');
       }
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Step 2 of Forgot Password: Submit new password
+  // Step 2: Submit New Password with Token
   const handleResetPasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
+    setSuccessMessage(null);
 
     const trimmedEmail = email.trim().toLowerCase();
-    if (!resetToken.trim()) {
-      setErrorMessage('Please provide the reset verification code or token.');
+    const trimmedToken = resetToken.trim();
+
+    if (!trimmedToken) {
+      setErrorMessage('Please enter or paste your reset token/code.');
       return;
     }
 
     if (!isPasswordValid) {
-      setErrorMessage('Please ensure your new password satisfies all requirements.');
+      setErrorMessage('New password does not meet the requirements.');
       return;
     }
 
     if (newPassword !== confirmPassword) {
-      setErrorMessage('Passwords do not match. Please re-enter.');
+      setErrorMessage('Passwords do not match.');
       return;
     }
 
     setIsSubmitting(true);
     try {
-      await resetPassword(trimmedEmail, resetToken.trim(), newPassword);
-      setSuccessMessage('Password updated successfully!');
+      await resetPassword(trimmedEmail, trimmedToken, newPassword);
       setForgotStep('completed');
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
         setErrorMessage(
           err.response?.data?.error?.message ||
             err.response?.data?.detail ||
-            'Failed to reset password. Token may have expired.'
+            'Failed to reset password. The token may be invalid or expired.'
         );
+      } else if (err instanceof Error) {
+        setErrorMessage(err.message);
       } else {
-        setErrorMessage('Failed to reset password.');
+        setErrorMessage('An unexpected error occurred.');
       }
     } finally {
       setIsSubmitting(false);
@@ -335,138 +468,134 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
 
   return (
     <AnimatePresence>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-        {/* Backdrop with Soft Blur */}
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 overflow-y-auto">
+        {/* Backdrop */}
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           onClick={closeAuthModal}
-          data-testid="auth-modal-backdrop"
-          className="absolute inset-0 bg-black/65 backdrop-blur-md"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm"
         />
 
-        {/* Modal Window Container */}
+        {/* Modal Dialog */}
         <motion.div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="auth-modal-title"
-          initial={{ scale: 0.95, opacity: 0, y: 15 }}
-          animate={{ scale: 1, opacity: 1, y: 0 }}
-          exit={{ scale: 0.95, opacity: 0, y: 15 }}
-          className={`relative w-full max-w-md rounded-3xl shadow-2xl overflow-hidden border transition-all ${
+          initial={{ opacity: 0, scale: 0.95, y: 15 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: 15 }}
+          transition={{ type: 'spring', duration: 0.4, bounce: 0.15 }}
+          className={`relative w-full max-w-md my-8 rounded-3xl p-6 sm:p-8 shadow-2xl border ${
             darkMode
-              ? 'bg-[#0f172a] border-gray-800 text-gray-100'
-              : 'bg-white border-slate-200 text-slate-900'
-          }`}
+              ? 'bg-gray-900/95 border-gray-800 text-white shadow-indigo-950/40'
+              : 'bg-white/95 border-slate-100 text-slate-900 shadow-xl'
+          } backdrop-blur-md z-10`}
         >
           {/* Close Button */}
           <button
             onClick={closeAuthModal}
-            aria-label="Close dialog"
-            className="absolute top-4 right-4 p-2 rounded-xl text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors z-10 cursor-pointer"
+            aria-label="Close modal"
+            className={`absolute top-5 right-5 p-2 rounded-full transition-all cursor-pointer ${
+              darkMode
+                ? 'text-gray-400 hover:text-white hover:bg-gray-800'
+                : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'
+            }`}
           >
             <X className="w-5 h-5" />
           </button>
 
-          {/* Header & Brand Icon */}
-          <div className="px-6 pt-7 pb-3 text-center space-y-2">
-            <div className="w-12 h-12 mx-auto rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center shadow-lg shadow-indigo-500/25">
-              {authModalTab === 'verify-email' ? (
-                <ShieldCheck className="w-6 h-6" />
-              ) : authModalTab === 'forgot-password' ? (
-                <KeyRound className="w-6 h-6" />
-              ) : (
-                <BookOpen className="w-6 h-6" />
-              )}
+          {/* Modal Header */}
+          <div className="text-center mb-6">
+            <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-lg shadow-indigo-500/25 mb-3">
+              <BookOpen className="w-6 h-6" />
             </div>
-            <div>
-              <h2 id="auth-modal-title" className="text-xl font-extrabold tracking-tight">
-                {authModalTab === 'verify-email'
-                  ? 'Verify Your Email'
-                  : authModalTab === 'forgot-password'
-                  ? 'Reset Password'
-                  : authModalTab === 'login'
-                  ? 'Welcome Back'
-                  : 'Create Account'}
-              </h2>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                {authModalTab === 'verify-email'
-                  ? 'Enter the 6-digit code sent to your email to activate your account.'
-                  : authModalTab === 'forgot-password'
-                  ? 'Recover your BiblioTrack reading account securely.'
-                  : authModalTab === 'login'
-                  ? 'Sign in with your verified email account to restore your reading progress.'
-                  : 'Join the BiblioTrack reading hub and save your personal library.'}
-              </p>
-            </div>
+            <h2 className="text-xl sm:text-2xl font-black tracking-tight">
+              {authModalTab === 'forgot-password'
+                ? 'Account Recovery'
+                : authModalTab === 'verify-email'
+                ? 'Verify Email Address'
+                : authModalTab === 'login'
+                ? 'Welcome Back'
+                : 'Create Account'}
+            </h2>
+            <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1">
+              {authModalTab === 'forgot-password'
+                ? 'Reset your password to regain access'
+                : authModalTab === 'verify-email'
+                ? 'Enter the 6-digit code to activate your account'
+                : authModalTab === 'login'
+                ? 'Sign in to access your personal bookshelf & progress'
+                : 'Join BiblioTrack with your Gmail account'}
+            </p>
           </div>
 
-          {/* Tab Switcher (Only on login / register) */}
-          {authModalTab === 'login' || authModalTab === 'register' ? (
-            <div className="px-6 pb-2">
-              <div className="p-1 rounded-2xl bg-slate-100 dark:bg-gray-800/80 border border-slate-200/80 dark:border-gray-700/60 flex items-center">
-                <button
-                  type="button"
-                  onClick={() => openAuthModal('login')}
-                  className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all duration-200 cursor-pointer ${
-                    authModalTab === 'login'
-                      ? 'bg-white dark:bg-gray-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
-                      : 'text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'
-                  }`}
-                >
-                  Sign In
-                </button>
-                <button
-                  type="button"
-                  onClick={() => openAuthModal('register')}
-                  className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all duration-200 cursor-pointer ${
-                    authModalTab === 'register'
-                      ? 'bg-white dark:bg-gray-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
-                      : 'text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'
-                  }`}
-                >
-                  Register
-                </button>
-              </div>
-            </div>
-          ) : (
-            /* Back to Sign In Link */
-            <div className="px-6 pb-2 flex items-center justify-between">
+          {/* Tab Switcher (Login / Register) */}
+          {(authModalTab === 'login' || authModalTab === 'register') && (
+            <div className="flex rounded-2xl p-1 mb-5 bg-slate-100 dark:bg-gray-800/60 border border-slate-200/50 dark:border-gray-700/40">
               <button
                 type="button"
                 onClick={() => openAuthModal('login')}
-                className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                className={`flex-1 py-2 text-xs sm:text-sm font-bold rounded-xl transition-all cursor-pointer ${
+                  authModalTab === 'login'
+                    ? 'bg-white dark:bg-gray-700 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                }`}
               >
-                <ArrowLeft className="w-3.5 h-3.5" />
-                <span>Back to Sign In</span>
+                Sign In
+              </button>
+              <button
+                type="button"
+                onClick={() => openAuthModal('register')}
+                className={`flex-1 py-2 text-xs sm:text-sm font-bold rounded-xl transition-all cursor-pointer ${
+                  authModalTab === 'register'
+                    ? 'bg-white dark:bg-gray-700 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                }`}
+              >
+                Register
               </button>
             </div>
           )}
 
-          {/* 1. EMAIL VERIFICATION WORKFLOW */}
+          {/* Global Alert Messages */}
+          {errorMessage && (
+            <motion.div
+              initial={{ opacity: 0, y: -5 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-4 p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/50 text-rose-600 dark:text-rose-400 text-xs flex items-start gap-2"
+            >
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <div className="flex-1">{errorMessage}</div>
+            </motion.div>
+          )}
+
+          {successMessage && (
+            <motion.div
+              initial={{ opacity: 0, y: -5 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-4 p-3 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/50 text-emerald-600 dark:text-emerald-400 text-xs flex items-start gap-2"
+            >
+              <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+              <div className="flex-1">{successMessage}</div>
+            </motion.div>
+          )}
+
+          {/* ======================================================== */}
+          {/* TAB: EMAIL VERIFICATION VIEW                             */}
+          {/* ======================================================== */}
           {authModalTab === 'verify-email' ? (
-            <form onSubmit={handleVerifyEmailSubmit} className="px-6 pb-6 pt-2 space-y-3">
-              {/* Error Message */}
-              {errorMessage && (
-                <div
-                  role="alert"
-                  className="flex items-start gap-2.5 p-3 rounded-2xl text-xs bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 font-semibold"
-                >
-                  <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                  <span>{errorMessage}</span>
+            <form onSubmit={handleVerifyEmailSubmit} className="space-y-4">
+              <div className="p-3.5 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-200/60 dark:border-indigo-800/40 text-xs text-indigo-700 dark:text-indigo-300 space-y-1">
+                <div className="flex items-center gap-1.5 font-bold">
+                  <ShieldCheck className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                  <span>Activation Code Required</span>
                 </div>
-              )}
+                <p className="text-[11px] leading-relaxed text-indigo-600/90 dark:text-indigo-300/80">
+                  Please enter the 6-digit verification code dispatched to{' '}
+                  <strong className="font-bold text-indigo-800 dark:text-indigo-200">{email || 'your email'}</strong>.
+                </p>
+              </div>
 
-              {/* Success Message */}
-              {successMessage && (
-                <div className="flex items-start gap-2.5 p-3 rounded-2xl text-xs bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-semibold">
-                  <CheckCircle2 className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                  <span>{successMessage}</span>
-                </div>
-              )}
-
-              {/* Target Email display / input */}
+              {/* Email (Readonly or Editable) */}
               <div className="space-y-1">
                 <label
                   htmlFor="verify-email-input"
@@ -500,27 +629,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
                 >
                   6-Digit Verification Code
                 </label>
-                <input
-                  id="verify-code-input"
-                  type="text"
-                  required
-                  maxLength={10}
-                  value={verificationCode}
-                  onChange={(e) => setVerificationCode(e.target.value.replace(/\s+/g, ''))}
-                  placeholder="123456"
-                  className={`w-full px-4 py-3 rounded-2xl text-center text-lg sm:text-xl font-mono tracking-widest font-black border focus:outline-none focus:ring-2 transition-all ${
-                    darkMode
-                      ? 'bg-gray-800/80 border-gray-700 text-indigo-400 focus:ring-indigo-500/50 focus:border-indigo-500 placeholder-gray-600'
-                      : 'bg-slate-50 border-slate-200 text-indigo-600 focus:ring-indigo-500/30 focus:border-indigo-600 placeholder-slate-300'
-                  }`}
-                />
+                <div className="relative">
+                  <KeyRound className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input
+                    id="verify-code-input"
+                    type="text"
+                    maxLength={6}
+                    required
+                    value={verificationCode}
+                    onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, ''))}
+                    placeholder="123456"
+                    className={`w-full pl-10 pr-4 py-2.5 rounded-2xl text-sm font-mono tracking-widest font-bold border focus:outline-none focus:ring-2 transition-all text-center ${
+                      darkMode
+                        ? 'bg-gray-800/80 border-gray-700 text-indigo-400 focus:ring-indigo-500/50 focus:border-indigo-500 placeholder-gray-600'
+                        : 'bg-slate-50 border-slate-200 text-indigo-600 focus:ring-indigo-500/30 focus:border-indigo-600 placeholder-slate-300'
+                    }`}
+                  />
+                </div>
               </div>
 
-              {/* Submit Activation Button */}
               <button
                 type="submit"
-                disabled={isSubmitting}
-                className="w-full mt-2 py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-lg shadow-indigo-600/25 transition-all flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+                disabled={isSubmitting || verificationCode.length < 4}
+                className="w-full mt-2 py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-lg shadow-indigo-600/25 transition-all flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
               >
                 {isSubmitting ? (
                   <>
@@ -530,59 +661,76 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
                 ) : (
                   <>
                     <ShieldCheck className="w-4 h-4" />
-                    <span>Verify & Activate Account</span>
+                    <span>Activate Account & Sign In</span>
                   </>
                 )}
               </button>
 
-              {/* Resend Code Section */}
-              <div className="pt-2 text-center">
+              {/* Resend Code Action */}
+              <div className="pt-2 flex items-center justify-between text-xs">
                 <button
                   type="button"
-                  onClick={handleResendCode}
-                  disabled={isResending || resendCooldown > 0}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  onClick={() => openAuthModal('login')}
+                  className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 font-medium flex items-center gap-1 cursor-pointer"
                 >
-                  <RotateCw className={`w-3.5 h-3.5 ${isResending ? 'animate-spin' : ''}`} />
-                  <span>
-                    {resendCooldown > 0
-                      ? `Resend code in ${resendCooldown}s`
-                      : 'Did not receive code? Resend'}
-                  </span>
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  <span>Back to Sign In</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isResending || resendCooldown > 0}
+                  onClick={handleResendCode}
+                  className="text-indigo-600 dark:text-indigo-400 font-bold hover:underline disabled:opacity-50 disabled:no-underline flex items-center gap-1 cursor-pointer"
+                >
+                  {isResending ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Sending...</span>
+                    </>
+                  ) : resendCooldown > 0 ? (
+                    <span>Resend in {resendCooldown}s</span>
+                  ) : (
+                    <>
+                      <RotateCw className="w-3.5 h-3.5" />
+                      <span>Resend Code</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
           ) : authModalTab === 'forgot-password' ? (
-            /* 2. FORGOT PASSWORD WORKFLOW */
-            <div className="px-6 pb-6 pt-2 space-y-4">
-              {/* Error Message */}
-              {errorMessage && (
-                <div
-                  role="alert"
-                  className="flex items-start gap-2.5 p-3 rounded-2xl text-xs bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 font-semibold"
-                >
-                  <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                  <span>{errorMessage}</span>
+            /* ======================================================== */
+            /* TAB: FORGOT PASSWORD FLOW                                */
+            /* ======================================================== */
+            <div className="space-y-4">
+              {forgotStep === 'completed' ? (
+                /* Step 3: Completed */
+                <div className="text-center py-4 space-y-3">
+                  <div className="w-12 h-12 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto">
+                    <CheckCircle2 className="w-6 h-6" />
+                  </div>
+                  <h3 className="text-base font-bold">Password Reset Complete!</h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Your password has been updated. You can now log in with your new credentials.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => openAuthModal('login')}
+                    className="w-full mt-2 py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-lg shadow-indigo-600/25 transition-all cursor-pointer"
+                  >
+                    Proceed to Sign In
+                  </button>
                 </div>
-              )}
-
-              {/* Success Message */}
-              {successMessage && forgotStep !== 'completed' && (
-                <div className="flex items-start gap-2.5 p-3 rounded-2xl text-xs bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-semibold">
-                  <CheckCircle2 className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                  <span>{successMessage}</span>
-                </div>
-              )}
-
-              {forgotStep === 'request' ? (
-                /* Step 1: Enter email */
-                <form onSubmit={handleRequestResetToken} className="space-y-3">
+              ) : forgotStep === 'request' ? (
+                /* Step 1: Request Email */
+                <form onSubmit={handleForgotPasswordRequest} className="space-y-3">
                   <div className="space-y-1">
                     <label
                       htmlFor="forgot-email"
                       className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400"
                     >
-                      Registered Email Address
+                      Registered Gmail Address
                     </label>
                     <div className="relative">
                       <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -610,7 +758,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
                     {isSubmitting ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>Sending Reset Code...</span>
+                        <span>Sending Request...</span>
                       </>
                     ) : (
                       <>
@@ -619,23 +767,31 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
                       </>
                     )}
                   </button>
+
+                  <div className="pt-2 text-center">
+                    <button
+                      type="button"
+                      onClick={() => openAuthModal('login')}
+                      className="text-xs font-semibold text-gray-500 dark:text-gray-400 hover:underline cursor-pointer"
+                    >
+                      Back to Sign In
+                    </button>
+                  </div>
                 </form>
-              ) : forgotStep === 'reset' ? (
-                /* Step 2: Enter new password */
+              ) : (
+                /* Step 2: Reset Password Form */
                 <form onSubmit={handleResetPasswordSubmit} className="space-y-3">
-                  {/* Target Email display */}
                   <div className="p-3 rounded-2xl bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-200/50 dark:border-indigo-800/30 text-xs flex items-center justify-between">
                     <span className="text-gray-500 dark:text-gray-400 font-medium">Resetting:</span>
                     <span className="font-bold text-indigo-600 dark:text-indigo-400">{email}</span>
                   </div>
 
-                  {/* Reset Token / Code */}
                   <div className="space-y-1">
                     <label
                       htmlFor="reset-token"
                       className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400"
                     >
-                      Reset Verification Code / Token
+                      Reset Token / Code
                     </label>
                     <input
                       id="reset-token"
@@ -643,7 +799,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
                       required
                       value={resetToken}
                       onChange={(e) => setResetToken(e.target.value)}
-                      placeholder="Paste reset token or code"
+                      placeholder="Paste reset token here"
                       className={`w-full px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-mono border focus:outline-none focus:ring-2 transition-all ${
                         darkMode
                           ? 'bg-gray-800/80 border-gray-700 text-white focus:ring-indigo-500/50 focus:border-indigo-500 placeholder-gray-500'
@@ -652,7 +808,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
                     />
                   </div>
 
-                  {/* New Password Field */}
                   <div className="space-y-1">
                     <label
                       htmlFor="new-password"
@@ -686,7 +841,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
                     </div>
                   </div>
 
-                  {/* Confirm Password Field */}
                   <div className="space-y-1">
                     <label
                       htmlFor="confirm-password"
@@ -712,32 +866,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
                     </div>
                   </div>
 
-                  {/* Requirements Checklist */}
-                  {newPassword.length > 0 && (
-                    <div className="p-3 rounded-2xl bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700/60 space-y-1 text-xs text-gray-600 dark:text-gray-400">
-                      <p className="font-bold text-[10px] uppercase tracking-wider mb-1 text-indigo-500">
-                        Password Requirements:
-                      </p>
-                      <div className="grid grid-cols-2 gap-1 text-[11px]">
-                        <span className={hasMinLength ? 'text-emerald-500 font-semibold' : ''}>
-                          {hasMinLength ? '✓' : '○'} 8-64 characters
-                        </span>
-                        <span className={hasUpper ? 'text-emerald-500 font-semibold' : ''}>
-                          {hasUpper ? '✓' : '○'} 1 uppercase
-                        </span>
-                        <span className={hasLower ? 'text-emerald-500 font-semibold' : ''}>
-                          {hasLower ? '✓' : '○'} 1 lowercase
-                        </span>
-                        <span className={hasNumber ? 'text-emerald-500 font-semibold' : ''}>
-                          {hasNumber ? '✓' : '○'} 1 number
-                        </span>
-                        <span className={`col-span-2 ${hasSpecial ? 'text-emerald-500 font-semibold' : ''}`}>
-                          {hasSpecial ? '✓' : '○'} 1 special character (!@#$%^&*()_+-=)
-                        </span>
-                      </div>
-                    </div>
-                  )}
-
                   <button
                     type="submit"
                     disabled={isSubmitting}
@@ -750,50 +878,72 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
                       </>
                     ) : (
                       <>
-                        <CheckCircle2 className="w-4 h-4" />
-                        <span>Save New Password</span>
+                        <ShieldCheck className="w-4 h-4" />
+                        <span>Set New Password</span>
                       </>
                     )}
                   </button>
                 </form>
-              ) : (
-                /* Step 3: Success Screen */
-                <div className="text-center py-6 space-y-4">
-                  <div className="w-16 h-16 mx-auto rounded-3xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center border border-emerald-500/20 shadow-lg">
-                    <CheckCircle2 className="w-8 h-8" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">
-                      Password Reset Complete!
-                    </h3>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-xs mx-auto">
-                      Your password has been securely updated in the database. You can now sign in with your new credentials.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => openAuthModal('login')}
-                    className="w-full py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-600/25 transition-all cursor-pointer"
-                  >
-                    Sign In Now
-                  </button>
-                </div>
               )}
             </div>
           ) : (
-            /* 3. STANDARD LOGIN & REGISTRATION FORMS */
-            <form onSubmit={handleStandardSubmit} className="px-6 pb-6 pt-2 space-y-3">
-              {/* Error Notification */}
-              {errorMessage && (
-                <div
-                  role="alert"
-                  className="p-3 rounded-2xl text-xs bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 font-semibold space-y-2"
+            /* ======================================================== */
+            /* TAB: NORMAL LOGIN & REGISTRATION FLOW                    */
+            /* ======================================================== */
+            <div className="space-y-4">
+              {/* Option 2: Google Sign-In Button */}
+              <div>
+                <button
+                  type="button"
+                  onClick={handleGoogleSignInClick}
+                  disabled={isGoogleLoading || isSubmitting}
+                  className={`w-full py-2.5 px-4 rounded-2xl border font-semibold text-xs sm:text-sm flex items-center justify-center gap-3 transition-all cursor-pointer shadow-sm disabled:opacity-60 disabled:cursor-not-allowed hover:scale-[1.01] active:scale-[0.99] ${
+                    darkMode
+                      ? 'bg-gray-800 hover:bg-gray-750 border-gray-700 text-white hover:border-gray-600'
+                      : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700 hover:border-slate-300'
+                  }`}
                 >
-                  <div className="flex items-start gap-2.5">
-                    <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                    <span>{errorMessage}</span>
-                  </div>
-                  {unverifiedLoginAttempt && (
+                  {isGoogleLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-indigo-500" />
+                  ) : (
+                    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                      <path
+                        fill="#4285F4"
+                        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                      />
+                      <path
+                        fill="#34A853"
+                        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                      />
+                      <path
+                        fill="#FBBC05"
+                        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                      />
+                      <path
+                        fill="#EA4335"
+                        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                      />
+                    </svg>
+                  )}
+                  <span>Continue with Google</span>
+                </button>
+              </div>
+
+              {/* Divider */}
+              <div className="relative flex items-center justify-center my-3">
+                <div className="grow border-t border-slate-200 dark:border-gray-800" />
+                <span className="shrink-0 px-3 text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                  or with email
+                </span>
+                <div className="grow border-t border-slate-200 dark:border-gray-800" />
+              </div>
+
+              {/* Option 1: Normal Gmail & Password Form */}
+              <form onSubmit={handleStandardSubmit} className="space-y-3.5">
+                {/* Unverified prompt if mandatory verification is re-enabled */}
+                {unverifiedLoginAttempt && (
+                  <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 text-amber-700 dark:text-amber-300 text-xs space-y-2">
+                    <p className="font-medium">This account requires email verification.</p>
                     <button
                       type="button"
                       onClick={() => openAuthModal('verify-email')}
@@ -802,54 +952,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
                       <ShieldCheck className="w-3.5 h-3.5" />
                       <span>Enter Verification Code →</span>
                     </button>
-                  )}
-                </div>
-              )}
+                  </div>
+                )}
 
-              {/* Email Field */}
-              <div className="space-y-1">
-                <label
-                  htmlFor="auth-email"
-                  className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400"
-                >
-                  Email Address
-                </label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <input
-                    id="auth-email"
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="name@gmail.com"
-                    className={`w-full pl-10 pr-4 py-2.5 rounded-2xl text-xs sm:text-sm border focus:outline-none focus:ring-2 transition-all ${
-                      darkMode
-                        ? 'bg-gray-800/80 border-gray-700 text-white focus:ring-indigo-500/50 focus:border-indigo-500 placeholder-gray-500'
-                        : 'bg-slate-50 border-slate-200 text-slate-900 focus:ring-indigo-500/30 focus:border-indigo-600 placeholder-slate-400'
-                    }`}
-                  />
-                </div>
-              </div>
-
-              {/* Username Field (Registration Only) */}
-              {authModalTab === 'register' && (
+                {/* Email Field */}
                 <div className="space-y-1">
                   <label
-                    htmlFor="auth-username"
+                    htmlFor="auth-email"
                     className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400"
                   >
-                    Username
+                    Gmail Address
                   </label>
                   <div className="relative">
-                    <UserIcon className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
                     <input
-                      id="auth-username"
-                      type="text"
+                      id="auth-email"
+                      type="email"
                       required
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      placeholder="booklover42"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="name@gmail.com"
                       className={`w-full pl-10 pr-4 py-2.5 rounded-2xl text-xs sm:text-sm border focus:outline-none focus:ring-2 transition-all ${
                         darkMode
                           ? 'bg-gray-800/80 border-gray-700 text-white focus:ring-indigo-500/50 focus:border-indigo-500 placeholder-gray-500'
@@ -858,98 +980,126 @@ export const AuthModal: React.FC<AuthModalProps> = ({ darkMode = false }) => {
                     />
                   </div>
                 </div>
-              )}
 
-              {/* Password Field */}
-              <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <label
-                    htmlFor="auth-password"
-                    className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400"
-                  >
-                    Password
-                  </label>
-                  {authModalTab === 'login' && (
-                    <button
-                      type="button"
-                      onClick={() => openAuthModal('forgot-password')}
-                      className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                {/* Username Field (Registration Only) */}
+                {authModalTab === 'register' && (
+                  <div className="space-y-1">
+                    <label
+                      htmlFor="auth-username"
+                      className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400"
                     >
-                      Forgot password?
-                    </button>
-                  )}
-                </div>
-                <div className="relative">
-                  <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <input
-                    id="auth-password"
-                    type={showPassword ? 'text' : 'password'}
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••••••"
-                    className={`w-full pl-10 pr-11 py-2.5 rounded-2xl text-xs sm:text-sm border focus:outline-none focus:ring-2 transition-all ${
-                      darkMode
-                        ? 'bg-gray-800/80 border-gray-700 text-white focus:ring-indigo-500/50 focus:border-indigo-500 placeholder-gray-500'
-                        : 'bg-slate-50 border-slate-200 text-slate-900 focus:ring-indigo-500/30 focus:border-indigo-600 placeholder-slate-400'
-                    }`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((prev) => !prev)}
-                    aria-label={showPassword ? 'Hide password' : 'Show password'}
-                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 cursor-pointer"
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              {/* Password Requirements Checklist (Register Only) */}
-              {authModalTab === 'register' && password.length > 0 && (
-                <div className="p-3 rounded-2xl bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700/60 space-y-1 text-xs text-gray-600 dark:text-gray-400">
-                  <p className="font-bold text-[10px] uppercase tracking-wider mb-1 text-indigo-500">
-                    Password Requirements:
-                  </p>
-                  <div className="grid grid-cols-2 gap-1 text-[11px]">
-                    <span className={hasMinLength ? 'text-emerald-500 font-semibold' : ''}>
-                      {hasMinLength ? '✓' : '○'} 8-64 characters
-                    </span>
-                    <span className={hasUpper ? 'text-emerald-500 font-semibold' : ''}>
-                      {hasUpper ? '✓' : '○'} 1 uppercase
-                    </span>
-                    <span className={hasLower ? 'text-emerald-500 font-semibold' : ''}>
-                      {hasLower ? '✓' : '○'} 1 lowercase
-                    </span>
-                    <span className={hasNumber ? 'text-emerald-500 font-semibold' : ''}>
-                      {hasNumber ? '✓' : '○'} 1 number
-                    </span>
-                    <span className={`col-span-2 ${hasSpecial ? 'text-emerald-500 font-semibold' : ''}`}>
-                      {hasSpecial ? '✓' : '○'} 1 special character (!@#$%^&*()_+-=)
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {/* Submit Action Button */}
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="w-full mt-2 py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-lg shadow-indigo-600/25 transition-all flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
-              >
-                {isSubmitting ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Processing...</span>
-                  </>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="w-4 h-4" />
-                    <span>{authModalTab === 'login' ? 'Sign In' : 'Create Account'}</span>
+                      Username
+                    </label>
+                    <div className="relative">
+                      <UserIcon className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                      <input
+                        id="auth-username"
+                        type="text"
+                        required
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        placeholder="booklover42"
+                        className={`w-full pl-10 pr-4 py-2.5 rounded-2xl text-xs sm:text-sm border focus:outline-none focus:ring-2 transition-all ${
+                          darkMode
+                            ? 'bg-gray-800/80 border-gray-700 text-white focus:ring-indigo-500/50 focus:border-indigo-500 placeholder-gray-500'
+                            : 'bg-slate-50 border-slate-200 text-slate-900 focus:ring-indigo-500/30 focus:border-indigo-600 placeholder-slate-400'
+                        }`}
+                      />
+                    </div>
                   </div>
                 )}
-              </button>
-            </form>
+
+                {/* Password Field */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label
+                      htmlFor="auth-password"
+                      className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400"
+                    >
+                      Password
+                    </label>
+                    {authModalTab === 'login' && (
+                      <button
+                        type="button"
+                        onClick={() => openAuthModal('forgot-password')}
+                        className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                      >
+                        Forgot password?
+                      </button>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      id="auth-password"
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="••••••••••••"
+                      className={`w-full pl-10 pr-11 py-2.5 rounded-2xl text-xs sm:text-sm border focus:outline-none focus:ring-2 transition-all ${
+                        darkMode
+                          ? 'bg-gray-800/80 border-gray-700 text-white focus:ring-indigo-500/50 focus:border-indigo-500 placeholder-gray-500'
+                          : 'bg-slate-50 border-slate-200 text-slate-900 focus:ring-indigo-500/30 focus:border-indigo-600 placeholder-slate-400'
+                      }`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((prev) => !prev)}
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 cursor-pointer"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Password Requirements Checklist (Register Only) */}
+                {authModalTab === 'register' && password.length > 0 && (
+                  <div className="p-3 rounded-2xl bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700/60 space-y-1 text-xs text-gray-600 dark:text-gray-400">
+                    <p className="font-bold text-[10px] uppercase tracking-wider mb-1 text-indigo-500">
+                      Password Requirements:
+                    </p>
+                    <div className="grid grid-cols-2 gap-1 text-[11px]">
+                      <span className={hasMinLength ? 'text-emerald-500 font-semibold' : ''}>
+                        {hasMinLength ? '✓' : '○'} 8-64 characters
+                      </span>
+                      <span className={hasUpper ? 'text-emerald-500 font-semibold' : ''}>
+                        {hasUpper ? '✓' : '○'} 1 uppercase
+                      </span>
+                      <span className={hasLower ? 'text-emerald-500 font-semibold' : ''}>
+                        {hasLower ? '✓' : '○'} 1 lowercase
+                      </span>
+                      <span className={hasNumber ? 'text-emerald-500 font-semibold' : ''}>
+                        {hasNumber ? '✓' : '○'} 1 number
+                      </span>
+                      <span className={`col-span-2 ${hasSpecial ? 'text-emerald-500 font-semibold' : ''}`}>
+                        {hasSpecial ? '✓' : '○'} 1 special character (!@#$%^&*()_+-=)
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Submit Action Button */}
+                <button
+                  type="submit"
+                  disabled={isSubmitting || isGoogleLoading}
+                  className="w-full mt-2 py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-lg shadow-indigo-600/25 transition-all flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Processing...</span>
+                    </>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4" />
+                      <span>{authModalTab === 'login' ? 'Sign In' : 'Create Account'}</span>
+                    </div>
+                  )}
+                </button>
+              </form>
+            </div>
           )}
         </motion.div>
       </div>

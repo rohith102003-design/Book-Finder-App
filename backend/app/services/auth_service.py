@@ -3,6 +3,7 @@ from datetime import timedelta, timezone
 import os
 import re
 import secrets
+import time
 import uuid
 import httpx
 from typing import Optional, Tuple
@@ -43,13 +44,22 @@ class AuthService:
         self.verification_repo = email_verification_repository
         self.email_service = email_service
 
+    def is_gmail_address(self, email: str) -> bool:
+        """Validates that email address belongs to Gmail/Google Mail domain"""
+        normalized = email.strip().lower()
+        return normalized.endswith("@gmail.com") or normalized.endswith("@googlemail.com")
+
     async def register_user(
         self,
         db: AsyncSession,
         user_in: UserCreate,
-    ) -> Tuple[User, str]:
-        """Registers a new unverified user account, generates an email verification code, and dispatches activation email"""
+    ) -> Tuple[User, Optional[str]]:
+        """Registers a new user account, enforces Gmail domain, and immediately activates account when SMTP verification is disabled"""
         email = user_in.email.strip().lower()
+
+        # Enforce Gmail address requirement on normal registration
+        if not self.is_gmail_address(email):
+            raise InvalidCredentialsError("Please use a Gmail address (@gmail.com) to create an account.")
 
         # 1. Check email uniqueness (case-insensitive)
         existing_email_user = await self.repository.get_by_email(db, email)
@@ -61,7 +71,9 @@ class AuthService:
         if existing_username_user:
             raise UserAlreadyExistsError("Username is already taken.")
 
-        # 3. Hash password and persist user as unverified
+        # 3. Hash password and persist user
+        # When REQUIRE_EMAIL_VERIFICATION is False (default), mark email_verified = True immediately
+        initial_verified = not settings.REQUIRE_EMAIL_VERIFICATION
         password_hash = hash_password(user_in.password)
         created_user = await self.repository.create(
             db=db,
@@ -70,30 +82,30 @@ class AuthService:
             password_hash=password_hash,
             auth_provider="LOCAL",
             provider_user_id=None,
-            email_verified=False,
+            email_verified=initial_verified,
             avatar_url=None,
             role=UserRole.USER.value,
             is_active=True,
         )
 
-        # 4. Generate 6-digit secure verification code with 15-minute expiration
-        code = f"{secrets.randbelow(900000) + 100000}"
-        expires_at = datetime.datetime.now(timezone.utc) + timedelta(
-            minutes=settings.EMAIL_VERIFICATION_TOKEN_EXPIRE_MINUTES
-        )
-        await self.verification_repo.create_token(
-            db=db,
-            user_id=created_user.id,
-            code=code,
-            expires_at=expires_at,
-        )
-
-        # 5. Dispatch verification email
-        self.email_service.send_verification_email(
-            to_email=created_user.email,
-            username=created_user.username,
-            code=code,
-        )
+        code: Optional[str] = None
+        # If mandatory verification is explicitly enabled via config, generate code & send email
+        if settings.REQUIRE_EMAIL_VERIFICATION:
+            code = f"{secrets.randbelow(900000) + 100000}"
+            expires_at = datetime.datetime.now(timezone.utc) + timedelta(
+                minutes=settings.EMAIL_VERIFICATION_TOKEN_EXPIRE_MINUTES
+            )
+            await self.verification_repo.create_token(
+                db=db,
+                user_id=created_user.id,
+                code=code,
+                expires_at=expires_at,
+            )
+            self.email_service.send_verification_email(
+                to_email=created_user.email,
+                username=created_user.username,
+                code=code,
+            )
 
         return created_user, code
 
@@ -170,6 +182,11 @@ class AuthService:
     ) -> User:
         """Authenticates user credentials, active status, and email verification state"""
         normalized_email = email.strip().lower()
+
+        # Enforce Gmail address requirement on normal login
+        if not self.is_gmail_address(normalized_email):
+            raise InvalidCredentialsError("Please use a Gmail address (@gmail.com) to sign in.")
+
         user = await self.repository.get_by_email(db, normalized_email)
         if not user or not verify_password(password, user.password_hash):
             raise InvalidCredentialsError("Invalid email or password.")
@@ -177,6 +194,7 @@ class AuthService:
         if not user.is_active:
             raise ForbiddenError("Account has been deactivated.")
 
+        # Only block if REQUIRE_EMAIL_VERIFICATION is explicitly configured True
         if settings.REQUIRE_EMAIL_VERIFICATION and not user.email_verified:
             raise EmailNotVerifiedError(
                 "Email is not verified. Please verify your email address to access your account."
@@ -190,13 +208,14 @@ class AuthService:
         payload: GoogleAuthPayload,
     ) -> User:
         """
-        Verifies Google OAuth ID Token credential via Google's tokeninfo API,
-        finds existing user or creates a new one, and returns the authenticated User record.
+        Cryptographically verifies Google OAuth ID Token credential via Google's tokeninfo API,
+        validates issuer, audience, expiration, and email claims, performs safe account linking,
+        and returns the authenticated User record.
         """
         token = payload.credential.strip()
         google_user_info = None
 
-        # 1. Verify token with Google TokenInfo endpoint
+        # 1. Cryptographically verify token with Google TokenInfo endpoint
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(f"https://oauth2.googleapis.com/tokeninfo?id_token={token}")
@@ -205,7 +224,7 @@ class AuthService:
         except Exception:
             pass
 
-        # If token was an access token instead of id_token, try userinfo endpoint
+        # Fallback for OAuth access tokens if supplied
         if not google_user_info or "email" not in google_user_info:
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
@@ -221,16 +240,36 @@ class AuthService:
         if not google_user_info or "email" not in google_user_info:
             raise InvalidCredentialsError("Google authentication failed. Invalid token.")
 
+        # 2. Validate token claims
+        issuer = google_user_info.get("iss", "")
+        if issuer not in ["accounts.google.com", "https://accounts.google.com"]:
+            raise InvalidCredentialsError("Google authentication failed. Untrusted issuer.")
+
+        # Verify audience/client_id strictly against server-configured GOOGLE_CLIENT_ID
+        aud = str(google_user_info.get("aud", "")).strip()
+        if settings.GOOGLE_CLIENT_ID:
+            if not aud or aud != settings.GOOGLE_CLIENT_ID:
+                raise InvalidCredentialsError("Google authentication failed. Client ID mismatch.")
+
+        # Verify expiration
+        exp = int(google_user_info.get("exp", 0))
+        if exp > 0 and exp < int(time.time()):
+            raise InvalidCredentialsError("Google authentication failed. Token expired.")
+
         google_email = google_user_info.get("email", "").strip().lower()
         google_sub = str(google_user_info.get("sub", "")).strip()
         google_name = google_user_info.get("name", "") or google_user_info.get("given_name", "") or google_email.split("@")[0]
         google_picture = google_user_info.get("picture", None)
-        email_verified = bool(google_user_info.get("email_verified", True))
+        raw_email_verified = google_user_info.get("email_verified", True)
+        email_verified = raw_email_verified is True or raw_email_verified == "true"
 
         if not google_email:
             raise InvalidCredentialsError("Google account does not have a valid email.")
 
-        # 2. Look up existing user by Google sub ID or email
+        if not google_sub:
+            raise InvalidCredentialsError("Google authentication failed. Missing user identifier.")
+
+        # 3. Safe Account Linking: Look up existing user by Google sub ID or email
         existing_user = None
         if google_sub:
             existing_user = await self.repository.get_by_provider_user_id(db, google_sub)
@@ -239,9 +278,11 @@ class AuthService:
             existing_user = await self.repository.get_by_email(db, google_email)
 
         if existing_user:
-            # Update provider ID and avatar if needed
+            # Safely link Google identity to existing account
             if not existing_user.provider_user_id and google_sub:
                 existing_user.provider_user_id = google_sub
+            if existing_user.auth_provider == "LOCAL":
+                existing_user.auth_provider = "GOOGLE"
             if google_picture and not existing_user.avatar_url:
                 existing_user.avatar_url = google_picture
             if email_verified and not existing_user.email_verified:
@@ -249,7 +290,7 @@ class AuthService:
             await self.repository.update_user(db, existing_user)
             return existing_user
 
-        # 3. Create a new user for this Google account with a unique username
+        # 4. Create a new user for this Google account with a clean, unique username
         base_username = re.sub(r"[^a-zA-Z0-9_-]", "", google_name)[:30] or "reader"
         if len(base_username) < 3:
             base_username = f"reader_{base_username}"
@@ -270,7 +311,7 @@ class AuthService:
             username=candidate_username,
             password_hash=password_hash,
             auth_provider="GOOGLE",
-            provider_user_id=google_sub or None,
+            provider_user_id=google_sub,
             email_verified=email_verified,
             avatar_url=google_picture,
             role=UserRole.USER.value,

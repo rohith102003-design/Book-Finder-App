@@ -13,7 +13,7 @@ import {
   setAccessToken,
   setOnSessionExpiredCallback,
 } from '../services/apiClient';
-import { User, TokenResponse, RegistrationResponse, ApiEnvelope } from '../types/auth';
+import { User, TokenResponse, ApiEnvelope } from '../types/auth';
 
 interface AuthContextType {
   user: User | null;
@@ -26,7 +26,7 @@ interface AuthContextType {
   closeAuthModal: () => void;
   login: (email: string, password: string) => Promise<void>;
   loginWithGoogle: (credential: string, clientId?: string) => Promise<void>;
-  register: (email: string, username: string, password: string) => Promise<RegistrationResponse>;
+  register: (email: string, username: string, password: string) => Promise<void>;
   verifyEmail: (email: string, code: string) => Promise<void>;
   resendVerification: (email: string) => Promise<string>;
   forgotPassword: (email: string) => Promise<{ message: string; reset_token?: string }>;
@@ -84,12 +84,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, [updateToken]);
 
-  // Initial authentication probe
+  // Initial session check on mount
   useEffect(() => {
     let isMounted = true;
 
     const initializeAuth = async () => {
-      setIsLoading(true);
       await refreshSession();
       if (isMounted) {
         setIsLoading(false);
@@ -153,21 +152,27 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     [updateToken, closeAuthModal]
   );
 
-  // User Registration (Creates unverified account and dispatches 6-digit email code)
+  // User Registration (Registers Gmail account and activates session immediately)
   const register = useCallback(
-    async (email: string, username: string, password: string): Promise<RegistrationResponse> => {
-      const response = await apiClient.post<ApiEnvelope<RegistrationResponse>>('/auth/register', {
+    async (email: string, username: string, password: string): Promise<void> => {
+      const response = await apiClient.post<ApiEnvelope<TokenResponse>>('/auth/register', {
         email,
         username,
         password,
       });
 
       if (response.data?.success && response.data?.data) {
-        return response.data.data;
+        const token = response.data.data.access_token;
+        const userData = response.data.data.user;
+
+        updateToken(token);
+        setUser(userData);
+        closeAuthModal();
+      } else {
+        throw new Error('Registration failed.');
       }
-      throw new Error('Registration failed.');
     },
-    []
+    [updateToken, closeAuthModal]
   );
 
   // Email Verification (Validates 6-digit code, activates account, and starts session)
@@ -223,17 +228,20 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     []
   );
 
-  // Password Reset Execution
+  // Password Reset Confirmation (Set new password)
   const resetPassword = useCallback(
     async (email: string, resetToken: string, newPassword: string): Promise<void> => {
-      const response = await apiClient.post<ApiEnvelope<{ message: string }>>('/auth/reset-password', {
-        email,
-        reset_token: resetToken,
-        new_password: newPassword,
-      });
+      const response = await apiClient.post<ApiEnvelope<{ message: string }>>(
+        '/auth/reset-password',
+        {
+          email,
+          reset_token: resetToken,
+          new_password: newPassword,
+        }
+      );
 
       if (!response.data?.success) {
-        throw new Error('Failed to reset password.');
+        throw new Error('Password reset failed.');
       }
     },
     []
@@ -244,7 +252,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     try {
       await apiClient.post('/auth/logout');
     } catch {
-      // Even if network fails, proceed with local teardown
+      // Proceed with client logout even if backend fails
     } finally {
       updateToken(null);
       setUser(null);

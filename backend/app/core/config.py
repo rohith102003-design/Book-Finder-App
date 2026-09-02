@@ -18,8 +18,12 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
-    # Email Verification & SMTP Delivery
-    REQUIRE_EMAIL_VERIFICATION: bool = True
+    # Google OAuth 2.0 / OpenID Connect
+    GOOGLE_CLIENT_ID: Optional[str] = None
+    GOOGLE_CLIENT_SECRET: Optional[str] = None
+
+    # Email Verification & SMTP Delivery (Optional / Configurable)
+    REQUIRE_EMAIL_VERIFICATION: bool = False
     EMAIL_VERIFICATION_TOKEN_EXPIRE_MINUTES: int = 15
     SMTP_HOST: Optional[str] = None
     SMTP_PORT: int = 587

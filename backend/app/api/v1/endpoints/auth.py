@@ -54,21 +54,24 @@ def clear_refresh_cookie(response: Response) -> None:
 
 @router.post(
     "/register",
-    response_model=ApiResponse[RegistrationResponse],
+    response_model=ApiResponse[TokenResponse],
     status_code=status.HTTP_201_CREATED,
     summary="Register a new user",
-    description="Registers a new unverified user and dispatches a 6-digit verification code to the provided email.",
+    description="Registers a new user account with a Gmail address, establishes session via httpOnly refresh cookie, and returns access token.",
 )
 async def register(
     user_in: UserCreate,
+    response: Response,
     db: AsyncSession = Depends(get_db),
-) -> ApiResponse[RegistrationResponse]:
+) -> ApiResponse[TokenResponse]:
     user, code = await auth_service.register_user(db, user_in)
+    access_token, refresh_token = auth_service.generate_tokens_for_user(user)
+    set_refresh_cookie(response, refresh_token)
+
     return ApiResponse(
-        data=RegistrationResponse(
-            message="Registration successful. A 6-digit verification code has been sent to your email address.",
-            email=user.email,
-            email_verified=user.email_verified,
+        data=TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
             user=UserResponse.model_validate(user),
         )
     )
@@ -119,7 +122,7 @@ async def resend_verification(
     response_model=ApiResponse[TokenResponse],
     status_code=status.HTTP_200_OK,
     summary="User login",
-    description="Authenticates verified credentials, establishes session via httpOnly refresh cookie, and returns access token.",
+    description="Authenticates Gmail credentials, establishes session via httpOnly refresh cookie, and returns access token.",
 )
 async def login(
     user_in: UserLogin,

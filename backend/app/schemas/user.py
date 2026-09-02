@@ -15,6 +15,14 @@ class UserBase(BaseModel):
     email: EmailStr
     username: str = Field(..., min_length=3, max_length=50, description="Unique username")
 
+    @field_validator("email")
+    @classmethod
+    def validate_gmail_email(cls, v: str) -> str:
+        clean = v.strip().lower()
+        if not (clean.endswith("@gmail.com") or clean.endswith("@googlemail.com")):
+            raise ValueError("Please use a Gmail address (@gmail.com) to create an account or sign in.")
+        return clean
+
     @field_validator("username")
     @classmethod
     def validate_username(cls, v: str) -> str:
@@ -48,6 +56,14 @@ class UserCreate(UserBase):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=1)
+
+    @field_validator("email")
+    @classmethod
+    def validate_gmail_email(cls, v: str) -> str:
+        clean = v.strip().lower()
+        if not (clean.endswith("@gmail.com") or clean.endswith("@googlemail.com")):
+            raise ValueError("Please use a Gmail address (@gmail.com) to sign in.")
+        return clean
 
 
 class GoogleAuthPayload(BaseModel):

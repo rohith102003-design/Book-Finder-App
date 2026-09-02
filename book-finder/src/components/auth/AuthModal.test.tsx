@@ -57,13 +57,14 @@ describe('AuthModal', () => {
     jest.clearAllMocks();
   });
 
-  it('renders and switches tabs between Sign In and Register', async () => {
+  it('renders Google sign-in option and switches tabs between Sign In and Register', async () => {
     await renderWithAuth();
 
     // Open Modal
     fireEvent.click(screen.getByText('Open Login'));
 
     expect(screen.getByRole('heading', { name: /welcome back/i })).toBeInTheDocument();
+    expect(screen.getByText(/continue with google/i)).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: /sign in/i }).length).toBeGreaterThan(0);
     expect(screen.queryByPlaceholderText('booklover42')).not.toBeInTheDocument();
 
@@ -71,6 +72,7 @@ describe('AuthModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     expect(screen.getByRole('heading', { name: /create account/i })).toBeInTheDocument();
+    expect(screen.getByText(/continue with google/i)).toBeInTheDocument();
     expect(screen.getByPlaceholderText('booklover42')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /create account/i })).toBeInTheDocument();
   });
@@ -113,16 +115,40 @@ describe('AuthModal', () => {
     });
   });
 
+  it('rejects non-Gmail address with user-friendly error', async () => {
+    await renderWithAuth();
+
+    fireEvent.click(screen.getByText('Open Register'));
+
+    fireEvent.change(screen.getByPlaceholderText('name@gmail.com'), {
+      target: { value: 'user@yahoo.com' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('booklover42'), {
+      target: { value: 'validuser' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('••••••••••••'), {
+      target: { value: 'ValidPass123!' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /create account/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/please use a gmail address \(@gmail\.com\)/i)
+      ).toBeInTheDocument();
+    });
+  });
+
   it('closes dialog on close button click', async () => {
     await renderWithAuth();
 
     fireEvent.click(screen.getByText('Open Login'));
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /welcome back/i })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /close dialog/i }));
+    fireEvent.click(screen.getByRole('button', { name: /close modal/i }));
 
     await waitFor(() => {
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: /welcome back/i })).not.toBeInTheDocument();
     });
   });
 });
