@@ -57,6 +57,30 @@ async def get_current_active_user(
     return current_user
 
 
+async def get_optional_current_user(
+    token: Optional[str] = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> Optional[User]:
+    """FastAPI dependency to optionally extract and validate Bearer access token if provided"""
+    if not token or not token.strip():
+        return None
+
+    try:
+        payload = decode_token(token, expected_type="access")
+        user_id_str = payload.get("sub")
+        if not user_id_str:
+            return None
+
+        user_id = uuid.UUID(str(user_id_str))
+        user = await user_repository.get_by_id(db, user_id)
+        if not user or not user.is_active:
+            return None
+
+        return user
+    except Exception:
+        return None
+
+
 def require_role(required_role: str) -> Callable:
     """FastAPI dependency factory enforcing Role-Based Access Control (RBAC)"""
     async def role_checker(

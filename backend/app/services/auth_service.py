@@ -1,3 +1,4 @@
+import httpx
 import datetime
 from datetime import timedelta, timezone
 import os
@@ -5,8 +6,11 @@ import re
 import secrets
 import time
 import uuid
-import httpx
 from typing import Optional, Tuple
+
+from google.auth.transport import requests
+from google.oauth2 import id_token
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -59,22 +63,31 @@ class AuthService:
 
         # Enforce Gmail address requirement on normal registration
         if not self.is_gmail_address(email):
-            raise InvalidCredentialsError("Please use a Gmail address (@gmail.com) to create an account.")
+            raise InvalidCredentialsError(
+                "Please use a Gmail address (@gmail.com) to create an account."
+            )
 
         # 1. Check email uniqueness (case-insensitive)
         existing_email_user = await self.repository.get_by_email(db, email)
         if existing_email_user:
-            raise UserAlreadyExistsError("An account with this email already exists.")
+            raise UserAlreadyExistsError(
+                "An account with this email already exists."
+            )
 
         # 2. Check username uniqueness
-        existing_username_user = await self.repository.get_by_username(db, user_in.username)
+        existing_username_user = await self.repository.get_by_username(
+            db,
+            user_in.username,
+        )
         if existing_username_user:
             raise UserAlreadyExistsError("Username is already taken.")
 
         # 3. Hash password and persist user
-        # When REQUIRE_EMAIL_VERIFICATION is False (default), mark email_verified = True immediately
+        # When REQUIRE_EMAIL_VERIFICATION is False (default),
+        # mark email_verified = True immediately.
         initial_verified = not settings.REQUIRE_EMAIL_VERIFICATION
         password_hash = hash_password(user_in.password)
+
         created_user = await self.repository.create(
             db=db,
             email=email,
@@ -89,18 +102,23 @@ class AuthService:
         )
 
         code: Optional[str] = None
-        # If mandatory verification is explicitly enabled via config, generate code & send email
+
+        # If mandatory verification is explicitly enabled via config,
+        # generate code & send email.
         if settings.REQUIRE_EMAIL_VERIFICATION:
             code = f"{secrets.randbelow(900000) + 100000}"
+
             expires_at = datetime.datetime.now(timezone.utc) + timedelta(
                 minutes=settings.EMAIL_VERIFICATION_TOKEN_EXPIRE_MINUTES
             )
+
             await self.verification_repo.create_token(
                 db=db,
                 user_id=created_user.id,
                 code=code,
                 expires_at=expires_at,
             )
+
             self.email_service.send_verification_email(
                 to_email=created_user.email,
                 username=created_user.username,
@@ -117,23 +135,42 @@ class AuthService:
     ) -> User:
         """Validates 6-digit code, marks user as email_verified=True, and returns activated User"""
         normalized_email = email.strip().lower()
-        user = await self.repository.get_by_email(db, normalized_email)
+
+        user = await self.repository.get_by_email(
+            db,
+            normalized_email,
+        )
+
         if not user:
             raise UserNotFoundError("User account not found.")
 
         if user.email_verified:
             return user
 
-        token = await self.verification_repo.get_active_token(db, user.id, code.strip())
+        token = await self.verification_repo.get_active_token(
+            db,
+            user.id,
+            code.strip(),
+        )
+
         if not token:
-            raise InvalidVerificationCodeError("Invalid or expired verification code.")
+            raise InvalidVerificationCodeError(
+                "Invalid or expired verification code."
+            )
 
         # Mark token as used
-        await self.verification_repo.mark_as_used(db, token)
+        await self.verification_repo.mark_as_used(
+            db,
+            token,
+        )
 
         # Activate user account
         user.email_verified = True
-        await self.repository.update_user(db, user)
+
+        await self.repository.update_user(
+            db,
+            user,
+        )
 
         return user
 
@@ -144,21 +181,34 @@ class AuthService:
     ) -> str:
         """Invalidates older tokens, generates a fresh 6-digit code, and resends activation email"""
         normalized_email = email.strip().lower()
-        user = await self.repository.get_by_email(db, normalized_email)
+
+        user = await self.repository.get_by_email(
+            db,
+            normalized_email,
+        )
+
         if not user:
-            return "If an account with this email exists, a verification code has been dispatched."
+            return (
+                "If an account with this email exists, "
+                "a verification code has been dispatched."
+            )
 
         if user.email_verified:
             return "This email address is already verified."
 
         # Invalidate old unused tokens
-        await self.verification_repo.invalidate_user_tokens(db, user.id)
+        await self.verification_repo.invalidate_user_tokens(
+            db,
+            user.id,
+        )
 
-        # Generate fresh code
+        # Generate fresh 6-digit code
         code = f"{secrets.randbelow(900000) + 100000}"
+
         expires_at = datetime.datetime.now(timezone.utc) + timedelta(
             minutes=settings.EMAIL_VERIFICATION_TOKEN_EXPIRE_MINUTES
         )
+
         await self.verification_repo.create_token(
             db=db,
             user_id=user.id,
@@ -185,19 +235,36 @@ class AuthService:
 
         # Enforce Gmail address requirement on normal login
         if not self.is_gmail_address(normalized_email):
-            raise InvalidCredentialsError("Please use a Gmail address (@gmail.com) to sign in.")
+            raise InvalidCredentialsError(
+                "Please use a Gmail address (@gmail.com) to sign in."
+            )
 
-        user = await self.repository.get_by_email(db, normalized_email)
-        if not user or not verify_password(password, user.password_hash):
-            raise InvalidCredentialsError("Invalid email or password.")
+        user = await self.repository.get_by_email(
+            db,
+            normalized_email,
+        )
+
+        if not user or not verify_password(
+            password,
+            user.password_hash,
+        ):
+            raise InvalidCredentialsError(
+                "Invalid email or password."
+            )
 
         if not user.is_active:
-            raise ForbiddenError("Account has been deactivated.")
+            raise ForbiddenError(
+                "Account has been deactivated."
+            )
 
         # Only block if REQUIRE_EMAIL_VERIFICATION is explicitly configured True
-        if settings.REQUIRE_EMAIL_VERIFICATION and not user.email_verified:
+        if (
+            settings.REQUIRE_EMAIL_VERIFICATION
+            and not user.email_verified
+        ):
             raise EmailNotVerifiedError(
-                "Email is not verified. Please verify your email address to access your account."
+                "Email is not verified. Please verify your email address "
+                "to access your account."
             )
 
         return user
@@ -208,102 +275,212 @@ class AuthService:
         payload: GoogleAuthPayload,
     ) -> User:
         """
-        Cryptographically verifies Google OAuth ID Token credential via Google's tokeninfo API,
-        validates issuer, audience, expiration, and email claims, performs safe account linking,
+        Cryptographically verifies a Google OAuth ID token using Google's
+        official verification library, validates issuer, audience,
+        expiration, and email claims, performs safe account linking,
         and returns the authenticated User record.
         """
+
         token = payload.credential.strip()
-        google_user_info = None
 
-        # 1. Cryptographically verify token with Google TokenInfo endpoint
+        if not token:
+            raise InvalidCredentialsError(
+                "Google authentication failed. Missing credential."
+            )
+
+        # 1. Cryptographically verify the Google ID token.
+        #
+        # Google Identity Services sends an ID token (JWT) as the credential.
+        # google-auth verifies the JWT signature using Google's public keys
+        # and validates the token's standard claims.
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"https://oauth2.googleapis.com/tokeninfo?id_token={token}")
-                if resp.status_code == 200:
-                    google_user_info = resp.json()
+            if not settings.GOOGLE_CLIENT_ID:
+                raise InvalidCredentialsError(
+                    "Google authentication is not configured on the server."
+                )
+
+            google_user_info = id_token.verify_oauth2_token(
+                token,
+                requests.Request(),
+                settings.GOOGLE_CLIENT_ID,
+            )
+
+        except InvalidCredentialsError:
+            raise
+
+        except ValueError:
+            raise InvalidCredentialsError(
+                "Google authentication failed. Invalid or expired token."
+            )
+
         except Exception:
-            pass
+            raise InvalidCredentialsError(
+                "Google authentication failed. Token verification error."
+            )
 
-        # Fallback for OAuth access tokens if supplied
-        if not google_user_info or "email" not in google_user_info:
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.get(
-                        "https://www.googleapis.com/oauth2/v3/userinfo",
-                        headers={"Authorization": f"Bearer {token}"},
-                    )
-                    if resp.status_code == 200:
-                        google_user_info = resp.json()
-            except Exception:
-                pass
-
-        if not google_user_info or "email" not in google_user_info:
-            raise InvalidCredentialsError("Google authentication failed. Invalid token.")
-
-        # 2. Validate token claims
+        # 2. Validate issuer explicitly.
         issuer = google_user_info.get("iss", "")
-        if issuer not in ["accounts.google.com", "https://accounts.google.com"]:
-            raise InvalidCredentialsError("Google authentication failed. Untrusted issuer.")
 
-        # Verify audience/client_id strictly against server-configured GOOGLE_CLIENT_ID
-        aud = str(google_user_info.get("aud", "")).strip()
-        if settings.GOOGLE_CLIENT_ID:
-            if not aud or aud != settings.GOOGLE_CLIENT_ID:
-                raise InvalidCredentialsError("Google authentication failed. Client ID mismatch.")
+        if issuer not in (
+            "accounts.google.com",
+            "https://accounts.google.com",
+        ):
+            raise InvalidCredentialsError(
+                "Google authentication failed. Untrusted issuer."
+            )
 
-        # Verify expiration
-        exp = int(google_user_info.get("exp", 0))
-        if exp > 0 and exp < int(time.time()):
-            raise InvalidCredentialsError("Google authentication failed. Token expired.")
+        # 3. Validate audience explicitly.
+        aud = str(
+            google_user_info.get("aud", "")
+        ).strip()
 
-        google_email = google_user_info.get("email", "").strip().lower()
-        google_sub = str(google_user_info.get("sub", "")).strip()
-        google_name = google_user_info.get("name", "") or google_user_info.get("given_name", "") or google_email.split("@")[0]
-        google_picture = google_user_info.get("picture", None)
-        raw_email_verified = google_user_info.get("email_verified", True)
-        email_verified = raw_email_verified is True or raw_email_verified == "true"
+        if aud != settings.GOOGLE_CLIENT_ID:
+            raise InvalidCredentialsError(
+                "Google authentication failed. Client ID mismatch."
+            )
+
+        # 4. Validate expiration explicitly.
+        exp = int(
+            google_user_info.get("exp", 0)
+        )
+
+        if not exp or exp < int(time.time()):
+            raise InvalidCredentialsError(
+                "Google authentication failed. Token expired."
+            )
+
+        # 5. Extract verified Google identity information.
+        google_email = str(
+            google_user_info.get("email", "")
+        ).strip().lower()
+
+        google_sub = str(
+            google_user_info.get("sub", "")
+        ).strip()
+
+        google_name = (
+            google_user_info.get("name", "")
+            or google_user_info.get("given_name", "")
+            or google_email.split("@")[0]
+        )
+
+        google_picture = google_user_info.get(
+            "picture"
+        )
+
+        raw_email_verified = google_user_info.get(
+            "email_verified",
+            False,
+        )
+
+        email_verified = (
+            raw_email_verified is True
+            or raw_email_verified == "true"
+        )
 
         if not google_email:
-            raise InvalidCredentialsError("Google account does not have a valid email.")
+            raise InvalidCredentialsError(
+                "Google account does not have a valid email."
+            )
 
         if not google_sub:
-            raise InvalidCredentialsError("Google authentication failed. Missing user identifier.")
+            raise InvalidCredentialsError(
+                "Google authentication failed. Missing user identifier."
+            )
 
-        # 3. Safe Account Linking: Look up existing user by Google sub ID or email
+        # This application requires Gmail/Google Mail accounts.
+        if not self.is_gmail_address(google_email):
+            raise InvalidCredentialsError(
+                "Please use a Gmail address (@gmail.com) "
+                "to sign in with Google."
+            )
+
+        # 6. Safe account linking.
+        #
+        # First try the immutable Google subject ID.
         existing_user = None
-        if google_sub:
-            existing_user = await self.repository.get_by_provider_user_id(db, google_sub)
 
+        if google_sub:
+            existing_user = (
+                await self.repository.get_by_provider_user_id(
+                    db,
+                    google_sub,
+                )
+            )
+
+        # If the Google identity is not linked yet,
+        # look up the existing account by email.
         if not existing_user:
-            existing_user = await self.repository.get_by_email(db, google_email)
+            existing_user = await self.repository.get_by_email(
+                db,
+                google_email,
+            )
 
         if existing_user:
-            # Safely link Google identity to existing account
-            if not existing_user.provider_user_id and google_sub:
+            # Safely link Google identity to the existing account.
+            if (
+                not existing_user.provider_user_id
+                and google_sub
+            ):
                 existing_user.provider_user_id = google_sub
+
             if existing_user.auth_provider == "LOCAL":
                 existing_user.auth_provider = "GOOGLE"
-            if google_picture and not existing_user.avatar_url:
+
+            if (
+                google_picture
+                and not existing_user.avatar_url
+            ):
                 existing_user.avatar_url = google_picture
-            if email_verified and not existing_user.email_verified:
+
+            if (
+                email_verified
+                and not existing_user.email_verified
+            ):
                 existing_user.email_verified = True
-            await self.repository.update_user(db, existing_user)
+
+            await self.repository.update_user(
+                db,
+                existing_user,
+            )
+
             return existing_user
 
-        # 4. Create a new user for this Google account with a clean, unique username
-        base_username = re.sub(r"[^a-zA-Z0-9_-]", "", google_name)[:30] or "reader"
+        # 7. Create a new user for this Google account.
+        #
+        # Generate a clean and unique username from the
+        # verified Google display name.
+        base_username = re.sub(
+            r"[^a-zA-Z0-9_-]",
+            "",
+            google_name,
+        )[:30] or "reader"
+
         if len(base_username) < 3:
             base_username = f"reader_{base_username}"
 
         candidate_username = base_username
         suffix = 1
-        while await self.repository.get_by_username(db, candidate_username):
-            candidate_username = f"{base_username[:25]}_{suffix}"
+
+        while await self.repository.get_by_username(
+            db,
+            candidate_username,
+        ):
+            candidate_username = (
+                f"{base_username[:25]}_{suffix}"
+            )
             suffix += 1
 
-        # Secure random password placeholder for OAuth accounts
-        oauth_dummy_password = f"OAuth_{secrets.token_urlsafe(32)}!Aa1"
-        password_hash = hash_password(oauth_dummy_password)
+        # Secure random password placeholder for OAuth accounts.
+        # The user authenticates through Google, so this password
+        # is never exposed or returned to the client.
+        oauth_dummy_password = (
+            f"OAuth_{secrets.token_urlsafe(32)}!Aa1"
+        )
+
+        password_hash = hash_password(
+            oauth_dummy_password
+        )
 
         new_user = await self.repository.create(
             db=db,
@@ -317,18 +494,25 @@ class AuthService:
             role=UserRole.USER.value,
             is_active=True,
         )
+
         return new_user
 
-    def generate_tokens_for_user(self, user: User) -> Tuple[str, str]:
+    def generate_tokens_for_user(
+        self,
+        user: User,
+    ) -> Tuple[str, str]:
         """Generates access token and refresh token pair for authenticated user"""
+
         access_token = create_access_token(
             subject=user.id,
             role=user.role,
         )
+
         refresh_token = create_refresh_token(
             subject=user.id,
             token_version=user.token_version,
         )
+
         return access_token, refresh_token
 
     async def validate_refresh_token(
@@ -337,28 +521,48 @@ class AuthService:
         refresh_token: str,
     ) -> User:
         """Decodes refresh token and validates subject, active status, and token_version"""
-        payload = decode_token(refresh_token, expected_type="refresh")
+
+        payload = decode_token(
+            refresh_token,
+            expected_type="refresh",
+        )
 
         user_id_str = payload.get("sub")
         token_ver = payload.get("ver")
 
         if not user_id_str or token_ver is None:
-            raise InvalidTokenError("Invalid refresh token payload.")
+            raise InvalidTokenError(
+                "Invalid refresh token payload."
+            )
 
         try:
-            user_id = uuid.UUID(str(user_id_str))
+            user_id = uuid.UUID(
+                str(user_id_str)
+            )
         except ValueError:
-            raise InvalidTokenError("Malformed user ID in token.")
+            raise InvalidTokenError(
+                "Malformed user ID in token."
+            )
 
-        user = await self.repository.get_by_id(db, user_id)
+        user = await self.repository.get_by_id(
+            db,
+            user_id,
+        )
+
         if not user:
-            raise InvalidTokenError("User account no longer exists.")
+            raise InvalidTokenError(
+                "User account no longer exists."
+            )
 
         if not user.is_active:
-            raise ForbiddenError("Account has been deactivated.")
+            raise ForbiddenError(
+                "Account has been deactivated."
+            )
 
         if user.token_version != token_ver:
-            raise InvalidTokenError("Refresh token has been revoked.")
+            raise InvalidTokenError(
+                "Refresh token has been revoked."
+            )
 
         return user
 
@@ -368,9 +572,21 @@ class AuthService:
         refresh_token: str,
     ) -> Tuple[str, str, User]:
         """Validates existing refresh token and issues a new access/refresh token pair"""
-        user = await self.validate_refresh_token(db, refresh_token)
-        access_token, new_refresh_token = self.generate_tokens_for_user(user)
-        return access_token, new_refresh_token, user
+
+        user = await self.validate_refresh_token(
+            db,
+            refresh_token,
+        )
+
+        access_token, new_refresh_token = (
+            self.generate_tokens_for_user(user)
+        )
+
+        return (
+            access_token,
+            new_refresh_token,
+            user,
+        )
 
     async def revoke_user_sessions(
         self,
@@ -378,7 +594,11 @@ class AuthService:
         user_id: uuid.UUID,
     ) -> Optional[User]:
         """Increments token version in database, instantly invalidating all existing refresh tokens"""
-        return await self.repository.increment_token_version(db, user_id)
+
+        return await self.repository.increment_token_version(
+            db,
+            user_id,
+        )
 
     async def request_password_reset(
         self,
@@ -386,16 +606,35 @@ class AuthService:
         email: str,
     ) -> Tuple[str, Optional[str]]:
         """Generates a secure password reset token for a registered account"""
+
         normalized_email = email.strip().lower()
-        user = await self.repository.get_by_email(db, normalized_email)
+
+        user = await self.repository.get_by_email(
+            db,
+            normalized_email,
+        )
+
         if not user:
-            return "If an account with this email exists, a password reset token has been generated.", None
+            return (
+                "If an account with this email exists, "
+                "a password reset token has been generated.",
+                None,
+            )
 
         if not user.is_active:
-            raise ForbiddenError("Account has been deactivated.")
+            raise ForbiddenError(
+                "Account has been deactivated."
+            )
 
-        reset_token = create_password_reset_token(user.id, user.email)
-        return "Password reset token generated successfully.", reset_token
+        reset_token = create_password_reset_token(
+            user.id,
+            user.email,
+        )
+
+        return (
+            "Password reset token generated successfully.",
+            reset_token,
+        )
 
     async def reset_password(
         self,
@@ -405,35 +644,71 @@ class AuthService:
         new_password: str,
     ) -> str:
         """Validates password reset token, updates password hash, and increments token version"""
-        payload = decode_token(reset_token.strip(), expected_type="password_reset")
+
+        payload = decode_token(
+            reset_token.strip(),
+            expected_type="password_reset",
+        )
+
         token_user_id = payload.get("sub")
         token_email = payload.get("email")
 
         if not token_user_id or not token_email:
-            raise InvalidTokenError("Invalid reset token payload.")
+            raise InvalidTokenError(
+                "Invalid reset token payload."
+            )
 
         normalized_email = email.strip().lower()
+
         if token_email.lower() != normalized_email:
-            raise InvalidTokenError("Reset token does not match the provided email.")
+            raise InvalidTokenError(
+                "Reset token does not match the provided email."
+            )
 
         try:
-            user_id = uuid.UUID(str(token_user_id))
+            user_id = uuid.UUID(
+                str(token_user_id)
+            )
         except ValueError:
-            raise InvalidTokenError("Malformed user ID in reset token.")
+            raise InvalidTokenError(
+                "Malformed user ID in reset token."
+            )
 
-        user = await self.repository.get_by_id(db, user_id)
-        if not user or user.email.lower() != normalized_email:
-            raise InvalidTokenError("User account not found.")
+        user = await self.repository.get_by_id(
+            db,
+            user_id,
+        )
+
+        if (
+            not user
+            or user.email.lower() != normalized_email
+        ):
+            raise InvalidTokenError(
+                "User account not found."
+            )
 
         if not user.is_active:
-            raise ForbiddenError("Account has been deactivated.")
+            raise ForbiddenError(
+                "Account has been deactivated."
+            )
 
-        # Update password hash & increment token_version to invalidate old sessions
-        user.password_hash = hash_password(new_password)
+        # Update password hash & increment token_version
+        # to invalidate old sessions.
+        user.password_hash = hash_password(
+            new_password
+        )
+
         user.token_version += 1
-        await self.repository.update_user(db, user)
 
-        return "Password has been successfully reset. You may now sign in with your new password."
+        await self.repository.update_user(
+            db,
+            user,
+        )
+
+        return (
+            "Password has been successfully reset. "
+            "You may now sign in with your new password."
+        )
 
 
 auth_service = AuthService()

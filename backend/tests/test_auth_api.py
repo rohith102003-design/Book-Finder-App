@@ -10,7 +10,7 @@ from app.repositories.user_repository import user_repository
 @pytest.mark.asyncio
 async def test_register_success(client: AsyncClient):
     payload = {
-        "email": "reader@example.com",
+        "email": "reader@gmail.com",
         "username": "alex_reads",
         "password": "SecurePassword123!",
     }
@@ -21,7 +21,7 @@ async def test_register_success(client: AsyncClient):
     assert data["success"] is True
     assert "access_token" in data["data"]
     assert data["data"]["token_type"] == "bearer"
-    assert data["data"]["user"]["email"] == "reader@example.com"
+    assert data["data"]["user"]["email"] == "reader@gmail.com"
     assert data["data"]["user"]["username"] == "alex_reads"
     assert data["data"]["user"]["role"] == "USER"
 
@@ -37,14 +37,14 @@ async def test_register_success(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_register_duplicate_email(client: AsyncClient):
     payload1 = {
-        "email": "dup@example.com",
+        "email": "dup@gmail.com",
         "username": "user_one",
         "password": "SecurePassword123!",
     }
     await client.post("/api/v1/auth/register", json=payload1)
 
     payload2 = {
-        "email": "DUP@example.com",
+        "email": "dup@gmail.com",
         "username": "user_two",
         "password": "SecurePassword123!",
     }
@@ -58,14 +58,14 @@ async def test_register_duplicate_email(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_register_duplicate_username(client: AsyncClient):
     payload1 = {
-        "email": "user1@example.com",
+        "email": "user1@gmail.com",
         "username": "same_handle",
         "password": "SecurePassword123!",
     }
     await client.post("/api/v1/auth/register", json=payload1)
 
     payload2 = {
-        "email": "user2@example.com",
+        "email": "user2@gmail.com",
         "username": "same_handle",
         "password": "SecurePassword123!",
     }
@@ -80,7 +80,7 @@ async def test_register_duplicate_username(client: AsyncClient):
 async def test_register_weak_password_validation(client: AsyncClient):
     # Missing special character and uppercase
     payload = {
-        "email": "weak@example.com",
+        "email": "weak@gmail.com",
         "username": "weak_user",
         "password": "weakpassword123",
     }
@@ -91,14 +91,14 @@ async def test_register_weak_password_validation(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_login_success(client: AsyncClient):
     register_payload = {
-        "email": "login_test@example.com",
+        "email": "login_test@gmail.com",
         "username": "login_user",
         "password": "SecurePassword123!",
     }
     await client.post("/api/v1/auth/register", json=register_payload)
 
     login_payload = {
-        "email": "login_test@example.com",
+        "email": "login_test@gmail.com",
         "password": "SecurePassword123!",
     }
     response = await client.post("/api/v1/auth/login", json=login_payload)
@@ -107,14 +107,14 @@ async def test_login_success(client: AsyncClient):
     data = response.json()
     assert data["success"] is True
     assert "access_token" in data["data"]
-    assert data["data"]["user"]["email"] == "login_test@example.com"
+    assert data["data"]["user"]["email"] == "login_test@gmail.com"
     assert "refreshToken" in response.cookies
 
 
 @pytest.mark.asyncio
 async def test_login_invalid_credentials(client: AsyncClient):
     login_payload = {
-        "email": "nonexistent@example.com",
+        "email": "nonexistent@gmail.com",
         "password": "WrongPassword123!",
     }
     response = await client.post("/api/v1/auth/login", json=login_payload)
@@ -127,20 +127,20 @@ async def test_login_invalid_credentials(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_login_inactive_account(client: AsyncClient, db_session: AsyncSession):
     register_payload = {
-        "email": "inactive_api@example.com",
+        "email": "inactive_api@gmail.com",
         "username": "inactive_api",
         "password": "SecurePassword123!",
     }
     await client.post("/api/v1/auth/register", json=register_payload)
 
     # Deactivate account directly in DB
-    user = await user_repository.get_by_email(db_session, "inactive_api@example.com")
+    user = await user_repository.get_by_email(db_session, "inactive_api@gmail.com")
     assert user is not None
     user.is_active = False
     await db_session.commit()
 
     login_payload = {
-        "email": "inactive_api@example.com",
+        "email": "inactive_api@gmail.com",
         "password": "SecurePassword123!",
     }
     response = await client.post("/api/v1/auth/login", json=login_payload)
@@ -153,7 +153,7 @@ async def test_login_inactive_account(client: AsyncClient, db_session: AsyncSess
 @pytest.mark.asyncio
 async def test_refresh_token_flow(client: AsyncClient):
     register_payload = {
-        "email": "refresh_api@example.com",
+        "email": "refresh_api@gmail.com",
         "username": "refresh_api_user",
         "password": "SecurePassword123!",
     }
@@ -186,12 +186,12 @@ async def test_refresh_token_missing_cookie(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_refresh_token_expired(client: AsyncClient, db_session: AsyncSession):
     register_payload = {
-        "email": "expired_refresh@example.com",
+        "email": "expired_refresh@gmail.com",
         "username": "expired_refresh_user",
         "password": "SecurePassword123!",
     }
     await client.post("/api/v1/auth/register", json=register_payload)
-    user = await user_repository.get_by_email(db_session, "expired_refresh@example.com")
+    user = await user_repository.get_by_email(db_session, "expired_refresh@gmail.com")
     assert user is not None
 
     expired_refresh_jwt = create_refresh_token(
@@ -212,12 +212,12 @@ async def test_refresh_token_expired(client: AsyncClient, db_session: AsyncSessi
 @pytest.mark.asyncio
 async def test_refresh_token_wrong_type(client: AsyncClient, db_session: AsyncSession):
     register_payload = {
-        "email": "wrong_type_refresh@example.com",
+        "email": "wrong_type_refresh@gmail.com",
         "username": "wrong_type_refresh_user",
         "password": "SecurePassword123!",
     }
     await client.post("/api/v1/auth/register", json=register_payload)
-    user = await user_repository.get_by_email(db_session, "wrong_type_refresh@example.com")
+    user = await user_repository.get_by_email(db_session, "wrong_type_refresh@gmail.com")
     assert user is not None
 
     # Pass access token instead of refresh token in cookie
@@ -235,7 +235,7 @@ async def test_refresh_token_wrong_type(client: AsyncClient, db_session: AsyncSe
 @pytest.mark.asyncio
 async def test_logout_and_session_revocation(client: AsyncClient, db_session: AsyncSession):
     register_payload = {
-        "email": "logout_test@example.com",
+        "email": "logout_test@gmail.com",
         "username": "logout_user",
         "password": "SecurePassword123!",
     }
@@ -263,7 +263,7 @@ async def test_logout_and_session_revocation(client: AsyncClient, db_session: As
 @pytest.mark.asyncio
 async def test_get_me_success(client: AsyncClient):
     register_payload = {
-        "email": "me_test@example.com",
+        "email": "me_test@gmail.com",
         "username": "me_user",
         "password": "SecurePassword123!",
     }
@@ -277,7 +277,7 @@ async def test_get_me_success(client: AsyncClient):
     assert response.status_code == 200
     data = response.json()
     assert data["success"] is True
-    assert data["data"]["email"] == "me_test@example.com"
+    assert data["data"]["email"] == "me_test@gmail.com"
     assert data["data"]["username"] == "me_user"
     assert "password_hash" not in data["data"]
 
@@ -299,7 +299,7 @@ async def test_get_me_unauthorized(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_get_me_inactive_user(client: AsyncClient, db_session: AsyncSession):
     register_payload = {
-        "email": "me_inactive@example.com",
+        "email": "me_inactive@gmail.com",
         "username": "me_inactive_user",
         "password": "SecurePassword123!",
     }
@@ -307,7 +307,7 @@ async def test_get_me_inactive_user(client: AsyncClient, db_session: AsyncSessio
     access_token = reg_res.json()["data"]["access_token"]
 
     # Deactivate in database
-    user = await user_repository.get_by_email(db_session, "me_inactive@example.com")
+    user = await user_repository.get_by_email(db_session, "me_inactive@gmail.com")
     assert user is not None
     user.is_active = False
     await db_session.commit()

@@ -27,3 +27,6 @@ htmlcov/
 # OS Files
 .DS_Store
 Thumbs.db
+
+# IDE & Project Configuration
+.idea/

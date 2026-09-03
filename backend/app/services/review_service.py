@@ -86,7 +86,13 @@ class ReviewService:
 
                 covers = work_data.get("covers", []) if work_data else []
                 cover_url = None
-                if covers and isinstance(covers, list) and len(covers) > 0 and isinstance(covers[0], int) and covers[0] > 0:
+                if (
+                    covers
+                    and isinstance(covers, list)
+                    and len(covers) > 0
+                    and isinstance(covers[0], int)
+                    and covers[0] > 0
+                ):
                     cover_url = f"{openlibrary_service.covers_url}/b/id/{covers[0]}-L.jpg"
 
                 subjects = work_data.get("subjects", []) if work_data else []
@@ -111,19 +117,12 @@ class ReviewService:
                 )
             book = await book_repository.upsert_by_openlibrary_id(db, book_in)
 
-        # Enforce one review per user per book (idempotent upsert)
-        existing_review = await review_repository.get_by_user_and_book(db, current_user.id, book.id)
+        # Enforce one review per user per book
+        existing_review = await review_repository.get_by_user_and_book(
+            db, current_user.id, book.id
+        )
         if existing_review:
-            existing_review.rating = review_in.rating
-            if review_in.title is not None:
-                existing_review.title = review_in.title
-            if review_in.content is not None:
-                existing_review.content = review_in.content
-            if review_in.contains_spoilers is not None:
-                existing_review.contains_spoilers = review_in.contains_spoilers
-            updated = await review_repository.update(db, existing_review)
-            is_verified = await self.is_user_verified_reader(db, current_user.id, book.id)
-            return self.to_review_response(updated, is_verified_reader=is_verified)
+            raise DuplicateReviewError()
 
         # Persist review
         review = await review_repository.create(
@@ -136,8 +135,13 @@ class ReviewService:
             contains_spoilers=review_in.contains_spoilers,
         )
 
-        is_verified = await self.is_user_verified_reader(db, current_user.id, book.id)
-        return self.to_review_response(review, is_verified_reader=is_verified)
+        is_verified = await self.is_user_verified_reader(
+            db, current_user.id, book.id
+        )
+        return self.to_review_response(
+            review,
+            is_verified_reader=is_verified,
+        )
 
     async def get_book_reviews(
         self,
@@ -161,14 +165,23 @@ class ReviewService:
             )
 
         # Retrieve reviews and aggregate stats
-        reviews_list = await review_repository.list_by_book(db, book.id, skip=skip, limit=limit)
+        reviews_list = await review_repository.list_by_book(
+            db, book.id, skip=skip, limit=limit
+        )
         stats = await review_repository.get_book_rating_stats(db, book.id)
 
         # Format review items with verified reader badges
         formatted_reviews: List[ReviewResponse] = []
         for rev in reviews_list:
-            is_verified = await self.is_user_verified_reader(db, rev.user_id, book.id)
-            formatted_reviews.append(self.to_review_response(rev, is_verified_reader=is_verified))
+            is_verified = await self.is_user_verified_reader(
+                db, rev.user_id, book.id
+            )
+            formatted_reviews.append(
+                self.to_review_response(
+                    rev,
+                    is_verified_reader=is_verified,
+                )
+            )
 
         distribution = RatingDistribution(
             one_star=int(stats["one_star"]),
@@ -199,12 +212,19 @@ class ReviewService:
         if not book:
             return None
 
-        review = await review_repository.get_by_user_and_book(db, current_user.id, book.id)
+        review = await review_repository.get_by_user_and_book(
+            db, current_user.id, book.id
+        )
         if not review:
             return None
 
-        is_verified = await self.is_user_verified_reader(db, current_user.id, book.id)
-        return self.to_review_response(review, is_verified_reader=is_verified)
+        is_verified = await self.is_user_verified_reader(
+            db, current_user.id, book.id
+        )
+        return self.to_review_response(
+            review,
+            is_verified_reader=is_verified,
+        )
 
     async def update_review(
         self,
@@ -228,8 +248,13 @@ class ReviewService:
             review.contains_spoilers = update_in.contains_spoilers
 
         updated = await review_repository.update(db, review)
-        is_verified = await self.is_user_verified_reader(db, current_user.id, updated.book_id)
-        return self.to_review_response(updated, is_verified_reader=is_verified)
+        is_verified = await self.is_user_verified_reader(
+            db, current_user.id, updated.book_id
+        )
+        return self.to_review_response(
+            updated,
+            is_verified_reader=is_verified,
+        )
 
     async def delete_review(
         self,

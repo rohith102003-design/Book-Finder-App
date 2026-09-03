@@ -20,63 +20,51 @@ class SocialFeedService:
         skip: int = 0,
         limit: int = 20,
     ) -> SocialFeedResponse:
-        """Fetch chronological activity feed from users followed by the current user or platform community"""
+        """Fetch chronological activity feed from users followed by the current user"""
+
         # 1. Fetch IDs of users followed by current_user
         following_list = await user_follow_repository.list_following(
             db, current_user.id, skip=0, limit=500
         )
         followed_user_ids = [f.following_id for f in following_list]
 
-        # 2. Fetch reviews (prioritize followed users or all community reviews)
-        if followed_user_ids:
-            reviews_stmt = (
-                select(Review)
-                .options(
-                    selectinload(Review.user),
-                    selectinload(Review.book),
-                )
-                .where((Review.user_id.in_(followed_user_ids)) | (Review.user_id == current_user.id))
-                .order_by(Review.created_at.desc())
-                .limit(limit * 2)
+        # If the user follows nobody, there is no personalized social feed.
+        if not followed_user_ids:
+            return SocialFeedResponse(
+                items=[],
+                total_count=0,
             )
-        else:
-            reviews_stmt = (
-                select(Review)
-                .options(
-                    selectinload(Review.user),
-                    selectinload(Review.book),
-                )
-                .order_by(Review.created_at.desc())
-                .limit(limit * 2)
+
+        # 2. Fetch reviews from followed users or the current user
+        reviews_stmt = (
+            select(Review)
+            .options(
+                selectinload(Review.user),
+                selectinload(Review.book),
             )
+            .where(
+                (Review.user_id.in_(followed_user_ids))
+                | (Review.user_id == current_user.id)
+            )
+            .order_by(Review.created_at.desc())
+            .limit(limit * 2)
+        )
 
         reviews_result = await db.execute(reviews_stmt)
         reviews = list(reviews_result.scalars().all())
 
-        # 3. Fetch review likes
-        if followed_user_ids:
-            likes_stmt = (
-                select(ReviewLike)
-                .options(
-                    selectinload(ReviewLike.user),
-                    selectinload(ReviewLike.review).selectinload(Review.book),
-                    selectinload(ReviewLike.review).selectinload(Review.user),
-                )
-                .where(ReviewLike.user_id.in_(followed_user_ids))
-                .order_by(ReviewLike.created_at.desc())
-                .limit(limit * 2)
+        # 3. Fetch review likes from followed users
+        likes_stmt = (
+            select(ReviewLike)
+            .options(
+                selectinload(ReviewLike.user),
+                selectinload(ReviewLike.review).selectinload(Review.book),
+                selectinload(ReviewLike.review).selectinload(Review.user),
             )
-        else:
-            likes_stmt = (
-                select(ReviewLike)
-                .options(
-                    selectinload(ReviewLike.user),
-                    selectinload(ReviewLike.review).selectinload(Review.book),
-                    selectinload(ReviewLike.review).selectinload(Review.user),
-                )
-                .order_by(ReviewLike.created_at.desc())
-                .limit(limit * 2)
-            )
+            .where(ReviewLike.user_id.in_(followed_user_ids))
+            .order_by(ReviewLike.created_at.desc())
+            .limit(limit * 2)
+        )
 
         likes_result = await db.execute(likes_stmt)
         likes = list(likes_result.scalars().all())

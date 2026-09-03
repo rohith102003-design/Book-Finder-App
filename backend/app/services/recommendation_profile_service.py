@@ -51,17 +51,7 @@ class RecommendationProfileService:
             db, current_user.id
         )
         if existing:
-            return await self.update_profile(
-                db,
-                current_user,
-                RecommendationProfileUpdate(
-                    preferred_genres=profile_in.preferred_genres,
-                    preferred_authors=profile_in.preferred_authors,
-                    preferred_languages=profile_in.preferred_languages,
-                    min_rating=profile_in.min_rating,
-                    max_rating=profile_in.max_rating,
-                ),
-            )
+            raise DuplicateRecommendationProfileError()
 
         profile = await recommendation_profile_repository.create(
             db=db,

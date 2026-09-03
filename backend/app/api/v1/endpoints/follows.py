@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_active_user
+from app.api.deps import get_current_active_user, get_optional_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.common import ApiResponse
@@ -68,18 +68,14 @@ async def get_follow_status(
     response_model=ApiResponse[List[UserFollowResponse]],
     status_code=status.HTTP_200_OK,
     summary="Get user's followers",
-    description="Returns paginated list of users following the target user (Private to account owner).",
+    description="Returns paginated list of users following the target user.",
 )
 async def get_followers(
     user_id: uuid.UUID,
-    current_user: User = Depends(get_current_active_user),
     skip: int = Query(0, ge=0, description="Pagination offset"),
     limit: int = Query(20, ge=1, le=100, description="Followers per page"),
     db: AsyncSession = Depends(get_db),
 ) -> ApiResponse[List[UserFollowResponse]]:
-    # Privacy rule: Users can only view their OWN followers list
-    if user_id != current_user.id:
-        return ApiResponse(data=[])
     followers = await user_follow_service.get_followers(
         db, user_id, skip=skip, limit=limit
     )
@@ -91,18 +87,14 @@ async def get_followers(
     response_model=ApiResponse[List[UserFollowResponse]],
     status_code=status.HTTP_200_OK,
     summary="Get users followed by user",
-    description="Returns paginated list of users followed by the target user (Private to account owner).",
+    description="Returns paginated list of users followed by the target user.",
 )
 async def get_following(
     user_id: uuid.UUID,
-    current_user: User = Depends(get_current_active_user),
     skip: int = Query(0, ge=0, description="Pagination offset"),
     limit: int = Query(20, ge=1, le=100, description="Following per page"),
     db: AsyncSession = Depends(get_db),
 ) -> ApiResponse[List[UserFollowResponse]]:
-    # Privacy rule: Users can only view their OWN following list
-    if user_id != current_user.id:
-        return ApiResponse(data=[])
     following = await user_follow_service.get_following(
         db, user_id, skip=skip, limit=limit
     )
@@ -118,7 +110,7 @@ async def get_following(
 )
 async def get_follow_stats(
     user_id: uuid.UUID,
-    current_user: Optional[User] = Depends(get_current_active_user),
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ApiResponse[FollowStatsResponse]:
     stats = await user_follow_service.get_follow_stats(db, current_user, user_id)

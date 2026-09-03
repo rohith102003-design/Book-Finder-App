@@ -15,14 +15,14 @@ from app.services.auth_service import auth_service
 @pytest.mark.asyncio
 async def test_register_user_success(db_session: AsyncSession):
     user_in = UserCreate(
-        email="newuser@example.com",
+        email="newuser@gmail.com",
         username="newuser",
         password="SecurePassword123!",
     )
-    user = await auth_service.register_user(db_session, user_in)
+    user, _ = await auth_service.register_user(db_session, user_in)
 
     assert user.id is not None
-    assert user.email == "newuser@example.com"
+    assert user.email == "newuser@gmail.com"
     assert user.username == "newuser"
     assert user.role == "USER"
     assert user.is_active is True
@@ -35,62 +35,65 @@ async def test_register_user_success(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_register_user_duplicate_email(db_session: AsyncSession):
     user_in1 = UserCreate(
-        email="duplicate@example.com",
+        email="duplicate@gmail.com",
         username="user_one",
         password="SecurePassword123!",
     )
     await auth_service.register_user(db_session, user_in1)
 
     user_in2 = UserCreate(
-        email="DUPLICATE@example.com",
+        email="duplicate@gmail.com",
         username="user_two",
         password="SecurePassword123!",
     )
     with pytest.raises(UserAlreadyExistsError) as exc_info:
         await auth_service.register_user(db_session, user_in2)
+
     assert "email already exists" in str(exc_info.value.message).lower()
 
 
 @pytest.mark.asyncio
 async def test_register_user_duplicate_username(db_session: AsyncSession):
     user_in1 = UserCreate(
-        email="first@example.com",
+        email="first@gmail.com",
         username="same_handle",
         password="SecurePassword123!",
     )
     await auth_service.register_user(db_session, user_in1)
 
     user_in2 = UserCreate(
-        email="second@example.com",
+        email="second@gmail.com",
         username="same_handle",
         password="SecurePassword123!",
     )
     with pytest.raises(UserAlreadyExistsError) as exc_info:
         await auth_service.register_user(db_session, user_in2)
+
     assert "username is already taken" in str(exc_info.value.message).lower()
 
 
 @pytest.mark.asyncio
 async def test_authenticate_user_success(db_session: AsyncSession):
     user_in = UserCreate(
-        email="authuser@example.com",
+        email="authuser@gmail.com",
         username="authuser",
         password="SecurePassword123!",
     )
-    created = await auth_service.register_user(db_session, user_in)
+    created, _ = await auth_service.register_user(db_session, user_in)
 
     authenticated = await auth_service.authenticate_user(
         db_session,
-        email="authuser@example.com",
+        email="authuser@gmail.com",
         password="SecurePassword123!",
     )
+
     assert authenticated.id == created.id
 
 
 @pytest.mark.asyncio
 async def test_authenticate_user_invalid_password(db_session: AsyncSession):
     user_in = UserCreate(
-        email="wrongpass@example.com",
+        email="wrongpass@gmail.com",
         username="wrongpass",
         password="SecurePassword123!",
     )
@@ -99,7 +102,7 @@ async def test_authenticate_user_invalid_password(db_session: AsyncSession):
     with pytest.raises(InvalidCredentialsError):
         await auth_service.authenticate_user(
             db_session,
-            email="wrongpass@example.com",
+            email="wrongpass@gmail.com",
             password="IncorrectPassword999!",
         )
 
@@ -109,7 +112,7 @@ async def test_authenticate_user_non_existent_email(db_session: AsyncSession):
     with pytest.raises(InvalidCredentialsError):
         await auth_service.authenticate_user(
             db_session,
-            email="doesnotexist@example.com",
+            email="doesnotexist@gmail.com",
             password="SomePassword123!",
         )
 
@@ -117,11 +120,11 @@ async def test_authenticate_user_non_existent_email(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_authenticate_user_inactive_account(db_session: AsyncSession):
     user_in = UserCreate(
-        email="inactive@example.com",
+        email="inactive@gmail.com",
         username="inactive_user",
         password="SecurePassword123!",
     )
-    user = await auth_service.register_user(db_session, user_in)
+    user, _ = await auth_service.register_user(db_session, user_in)
 
     # Deactivate user
     user.is_active = False
@@ -130,20 +133,21 @@ async def test_authenticate_user_inactive_account(db_session: AsyncSession):
     with pytest.raises(ForbiddenError) as exc_info:
         await auth_service.authenticate_user(
             db_session,
-            email="inactive@example.com",
+            email="inactive@gmail.com",
             password="SecurePassword123!",
         )
+
     assert "deactivated" in str(exc_info.value.message).lower()
 
 
 @pytest.mark.asyncio
 async def test_token_generation_and_refresh_validation(db_session: AsyncSession):
     user_in = UserCreate(
-        email="tokens@example.com",
+        email="tokens@gmail.com",
         username="tokens_user",
         password="SecurePassword123!",
     )
-    user = await auth_service.register_user(db_session, user_in)
+    user, _ = await auth_service.register_user(db_session, user_in)
 
     access_token, refresh_token = auth_service.generate_tokens_for_user(user)
 
@@ -153,18 +157,24 @@ async def test_token_generation_and_refresh_validation(db_session: AsyncSession)
     assert access_payload["type"] == "access"
 
     # Validate refresh token via service
-    validated_user = await auth_service.validate_refresh_token(db_session, refresh_token)
+    validated_user = await auth_service.validate_refresh_token(
+        db_session,
+        refresh_token,
+    )
+
     assert validated_user.id == user.id
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_revocation_on_version_increment(db_session: AsyncSession):
+async def test_refresh_token_revocation_on_version_increment(
+    db_session: AsyncSession,
+):
     user_in = UserCreate(
-        email="revoke@example.com",
+        email="revoke@gmail.com",
         username="revoke_user",
         password="SecurePassword123!",
     )
-    user = await auth_service.register_user(db_session, user_in)
+    user, _ = await auth_service.register_user(db_session, user_in)
 
     _, refresh_token = auth_service.generate_tokens_for_user(user)
 
@@ -173,24 +183,30 @@ async def test_refresh_token_revocation_on_version_increment(db_session: AsyncSe
 
     # Validating the old refresh token must fail
     with pytest.raises(InvalidTokenError) as exc_info:
-        await auth_service.validate_refresh_token(db_session, refresh_token)
+        await auth_service.validate_refresh_token(
+            db_session,
+            refresh_token,
+        )
+
     assert "revoked" in str(exc_info.value.message).lower()
 
 
 @pytest.mark.asyncio
 async def test_rotate_refresh_token_success(db_session: AsyncSession):
     user_in = UserCreate(
-        email="rotate@example.com",
+        email="rotate@gmail.com",
         username="rotate_user",
         password="SecurePassword123!",
     )
-    user = await auth_service.register_user(db_session, user_in)
+    user, _ = await auth_service.register_user(db_session, user_in)
 
     _, initial_refresh_token = auth_service.generate_tokens_for_user(user)
 
-    new_access, new_refresh, rotated_user = await auth_service.rotate_refresh_token(
-        db_session,
-        initial_refresh_token,
+    new_access, new_refresh, rotated_user = (
+        await auth_service.rotate_refresh_token(
+            db_session,
+            initial_refresh_token,
+        )
     )
 
     assert new_access is not None
