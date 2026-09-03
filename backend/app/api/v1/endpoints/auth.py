@@ -27,9 +27,23 @@ from app.services.auth_service import auth_service
 router = APIRouter()
 
 
+def get_cookie_samesite() -> str:
+    if settings.COOKIE_SAMESITE:
+        return settings.COOKIE_SAMESITE.lower()
+    return "none" if settings.ENVIRONMENT.lower() == "production" else "lax"
+
+
+def get_cookie_secure() -> bool:
+    if settings.COOKIE_SECURE is not None:
+        return settings.COOKIE_SECURE
+    return settings.ENVIRONMENT.lower() == "production"
+
+
 def set_refresh_cookie(response: Response, refresh_token: str) -> None:
     """Attaches httpOnly refresh token cookie scoped to the auth route path"""
     max_age = settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
+    samesite = get_cookie_samesite()
+    secure = get_cookie_secure() or (samesite == "none")
     response.set_cookie(
         key="refreshToken",
         value=refresh_token,
@@ -37,18 +51,20 @@ def set_refresh_cookie(response: Response, refresh_token: str) -> None:
         max_age=max_age,
         expires=max_age,
         path=f"{settings.API_V1_STR}/auth",
-        samesite="lax",
-        secure=(settings.ENVIRONMENT.lower() == "production"),
+        samesite=samesite,
+        secure=secure,
     )
 
 
 def clear_refresh_cookie(response: Response) -> None:
     """Clears the httpOnly refresh token cookie on logout"""
+    samesite = get_cookie_samesite()
+    secure = get_cookie_secure() or (samesite == "none")
     response.delete_cookie(
         key="refreshToken",
         path=f"{settings.API_V1_STR}/auth",
-        samesite="lax",
-        secure=(settings.ENVIRONMENT.lower() == "production"),
+        samesite=samesite,
+        secure=secure,
     )
 
 

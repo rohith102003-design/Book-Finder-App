@@ -7,6 +7,7 @@ import React, {
   useMemo,
   ReactNode,
 } from 'react';
+import axios from 'axios';
 import { AuthContext } from './AuthContext';
 import { bookshelfService } from '../services/bookshelfService';
 import {
@@ -129,23 +130,86 @@ export const BookshelfProvider: React.FC<{ children: ReactNode }> = ({ children 
       status: ReadingStatus = 'WANT_TO_READ',
       totalPages: number = 0
     ): Promise<BookshelfItem> => {
-      const cleanId = book.key.replace('/works/', '');
-      const item = await bookshelfService.addToBookshelf({
-        openlibrary_work_id: cleanId,
-        title: book.title,
-        authors: book.authors,
-        cover_url: book.coverUrl,
-        first_publish_year: book.firstPublishYear,
-        description: book.description,
-        edition_count: book.editionCount,
-        subjects: book.subjects,
-        status,
-        current_page: 0,
-        total_pages: totalPages,
-      });
+      const cleanId = book.key.replace('/works/', '').trim();
+      try {
+        const item = await bookshelfService.addToBookshelf({
+          openlibrary_work_id: cleanId,
+          title: book.title,
+          authors: book.authors,
+          cover_url: book.coverUrl,
+          first_publish_year: book.firstPublishYear,
+          description: book.description,
+          edition_count: book.editionCount,
+          subjects: book.subjects,
+          status,
+          current_page: 0,
+          total_pages: totalPages,
+        });
 
-      setBookshelf((prev) => [item, ...prev.filter((i) => i.id !== item.id)]);
-      return item;
+        setBookshelf((prev) => [item, ...prev.filter((i) => i.id !== item.id)]);
+        return item;
+      } catch (err: unknown) {
+        // If duplicate item error occurs (HTTP 409), reconcile local state with server
+        const is409 =
+          (axios.isAxiosError && axios.isAxiosError(err) && (err.response?.status === 409 || (err.response?.data as any)?.error?.code === 'DUPLICATE_BOOKSHELF_ITEM')) ||
+          (err && typeof err === 'object' && 'response' in err && (err as any).response?.status === 409) ||
+          (err && typeof err === 'object' && 'response' in err && (err as any).response?.data?.error?.code === 'DUPLICATE_BOOKSHELF_ITEM');
+
+        if (is409) {
+          try {
+            const freshList = await bookshelfService.getBookshelf();
+            if (freshList && Array.isArray(freshList.items)) {
+              setBookshelf(freshList.items);
+              const existingItem = freshList.items.find(
+                (i) =>
+                  i.book.openlibrary_work_id === cleanId ||
+                  i.book.openlibrary_work_id === book.key
+              );
+              if (existingItem) {
+                return existingItem;
+              }
+            }
+          } catch {
+            // Ignore sub-error
+          }
+
+          // Return a fallback representation of the existing bookshelf item to reconcile state
+          const fallbackItem: BookshelfItem = {
+            id: `shelf-${cleanId}`,
+            user_id: '',
+            book_id: `book-${cleanId}`,
+            book: {
+              id: `book-${cleanId}`,
+              openlibrary_work_id: cleanId,
+              title: book.title,
+              authors: book.authors,
+              edition_count: book.editionCount,
+              subjects: book.subjects,
+              cover_url: book.coverUrl,
+              description: book.description,
+              first_publish_year: book.firstPublishYear,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+            status,
+            current_page: 0,
+            total_pages: totalPages,
+            progress_percentage: 0,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+          setBookshelf((prev) => [
+            fallbackItem,
+            ...prev.filter(
+              (i) =>
+                i.book.openlibrary_work_id !== cleanId &&
+                i.book.openlibrary_work_id !== book.key
+            ),
+          ]);
+          return fallbackItem;
+        }
+        throw err;
+      }
     },
     []
   );

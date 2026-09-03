@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Bookmark,
   BookOpen,
@@ -43,7 +43,7 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
   isFavorite,
   onToggleFavorite,
 }) => {
-  const { bookshelf, isLoading, removeFromBookshelf } = useBookshelf();
+  const { bookshelf, isLoading, removeFromBookshelf, fetchBookshelf } = useBookshelf();
   const { getProgress, startOrContinueReading } = useReadingProgress();
   const { isAuthenticated, openAuthModal } = useAuth();
 
@@ -51,6 +51,13 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
   const [filterQuery, setFilterQuery] = useState<string>('');
   const [isAnalyticsOpen, setIsAnalyticsOpen] = useState<boolean>(false);
   const [goalRefreshTrigger, setGoalRefreshTrigger] = useState<number>(0);
+
+  // Synchronize bookshelf state on component mount
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchBookshelf();
+    }
+  }, [isAuthenticated, fetchBookshelf]);
 
   // Convert BookshelfItem.book to a standard Book entity
   const mapItemToBook = (item: BookshelfItem): Book => {

@@ -84,4 +84,40 @@ describe('Sidebar Layout Component', () => {
 
     expect(handleToggle).toHaveBeenCalled();
   });
+
+  it('renders mobile sidebar with close button and triggers onMobileClose', () => {
+    const handleClose = jest.fn();
+
+    render(
+      <AuthProvider>
+        <BookshelfProvider>
+          <ReadingProgressProvider>
+            <Sidebar
+              activeView="discover"
+              onViewChange={jest.fn()}
+              isCollapsed={false}
+              onToggleCollapse={jest.fn()}
+              isMobileOpen={true}
+              onMobileClose={handleClose}
+            />
+          </ReadingProgressProvider>
+        </BookshelfProvider>
+      </AuthProvider>
+    );
+
+    // Mobile header text is visible
+    expect(screen.getByText('BiblioTrack Menu')).toBeInTheDocument();
+
+    // Close button works
+    const closeBtn = screen.getByRole('button', { name: /close mobile menu/i });
+    expect(closeBtn).toBeInTheDocument();
+    fireEvent.click(closeBtn);
+    expect(handleClose).toHaveBeenCalledTimes(1);
+
+    // Backdrop overlay click also triggers close
+    const backdrop = screen.getByLabelText(/close sidebar overlay/i);
+    expect(backdrop).toBeInTheDocument();
+    fireEvent.click(backdrop);
+    expect(handleClose).toHaveBeenCalledTimes(2);
+  });
 });

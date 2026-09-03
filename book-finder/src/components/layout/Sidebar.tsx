@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  X,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useBookshelf } from '../../context/BookshelfContext';
@@ -132,27 +133,43 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <>
-      {/* Mobile Backdrop Overlay */}
+      {/* Mobile Backdrop Overlay (z-40) */}
       {isMobileOpen && (
         <div
           onClick={onMobileClose}
           aria-label="Close sidebar overlay"
-          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden transition-opacity"
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden transition-opacity cursor-pointer"
         />
       )}
 
-      {/* Sidebar Container - Positioned BELOW Top Navbar (top-16) */}
+      {/* Sidebar Container (z-50 on mobile, z-30 on desktop) */}
       <aside
-        className={`fixed top-16 left-0 z-30 h-[calc(100vh-4rem)] flex flex-col justify-between transition-all duration-300 ease-in-out border-r ${
+        className={`fixed top-0 md:top-16 left-0 z-50 md:z-30 h-full md:h-[calc(100vh-4rem)] flex flex-col justify-between transition-all duration-300 ease-in-out border-r ${
           darkMode
             ? 'bg-[#0f172a] border-gray-800 text-gray-100'
-            : 'bg-white border-slate-200 text-slate-900 shadow-md md:shadow-none'
+            : 'bg-white border-slate-200 text-slate-900 shadow-2xl md:shadow-none'
         } ${
           isMobileOpen
-            ? 'translate-x-0 w-64'
+            ? 'translate-x-0 w-72 max-w-[85vw]'
             : 'max-md:-translate-x-full ' + (isCollapsed ? 'w-20' : 'w-64')
         }`}
       >
+        {/* Mobile Header with Explicit Close Button */}
+        <div className="flex md:hidden items-center justify-between p-4 border-b border-gray-200 dark:border-gray-800">
+          <div className="flex items-center gap-2 font-black text-sm bg-gradient-to-r from-blue-500 to-indigo-500 bg-clip-text text-transparent">
+            <BookOpen className="w-5 h-5 text-indigo-500" />
+            <span>BiblioTrack Menu</span>
+          </div>
+          <button
+            type="button"
+            onClick={onMobileClose}
+            aria-label="Close mobile menu"
+            className="p-2 rounded-xl text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
         {/* Navigation Groups */}
         <div className="flex flex-col flex-grow overflow-y-auto overflow-x-hidden p-3 space-y-6">
           {navSections.map((section) => (

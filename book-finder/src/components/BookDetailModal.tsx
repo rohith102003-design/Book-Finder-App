@@ -76,6 +76,8 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       setIsAdding(true);
       try {
         await addToBookshelf(book);
+      } catch (err) {
+        console.error('Failed to add book to bookshelf:', err);
       } finally {
         setIsAdding(false);
       }

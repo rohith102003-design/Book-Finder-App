@@ -272,4 +272,72 @@ describe('BookshelfContext', () => {
       expect(screen.getByTestId('is-in-shelf')).toHaveTextContent('NO');
     });
   });
+
+  it('gracefully reconciles state when addToBookshelf receives HTTP 409 DUPLICATE_BOOKSHELF_ITEM', async () => {
+    (axios.post as jest.Mock).mockResolvedValueOnce({
+      data: {
+        success: true,
+        data: {
+          access_token: 'auth.token',
+          user: { id: 'user-uuid-1', username: 'bookworm', email: 'bw@test.com', role: 'USER' },
+        },
+      },
+    });
+
+    (bookshelfService.getBookshelf as jest.Mock)
+      .mockResolvedValueOnce({
+        items: [],
+        total: 0,
+        want_to_read_count: 0,
+        reading_count: 0,
+        completed_count: 0,
+      })
+      .mockResolvedValueOnce({
+        items: [mockItem],
+        total: 1,
+        want_to_read_count: 1,
+        reading_count: 0,
+        completed_count: 0,
+      });
+
+    const error409 = {
+      isAxiosError: true,
+      response: {
+        status: 409,
+        data: {
+          error: {
+            code: 'DUPLICATE_BOOKSHELF_ITEM',
+            message: 'This book is already present in your bookshelf.',
+          },
+        },
+      },
+    };
+    (axios.isAxiosError as unknown as jest.Mock).mockReturnValue(true);
+    (bookshelfService.addToBookshelf as jest.Mock).mockRejectedValueOnce(error409);
+
+    render(
+      <AuthProvider>
+        <BookshelfProvider>
+          <TestBookshelfConsumer />
+        </BookshelfProvider>
+      </AuthProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('is-loading')).toHaveTextContent('NO');
+      expect(screen.getByTestId('total-count')).toHaveTextContent('0');
+    });
+
+    // Click Add Book which triggers 409
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Add Book' }));
+    });
+
+    // State should reconcile and show book in shelf
+    await waitFor(() => {
+      expect(screen.getByTestId('total-count')).toHaveTextContent('1');
+      expect(screen.getByTestId('is-in-shelf')).toHaveTextContent('YES');
+      expect(screen.getByText('Test Bookshelf Title')).toBeInTheDocument();
+    });
+  });
 });

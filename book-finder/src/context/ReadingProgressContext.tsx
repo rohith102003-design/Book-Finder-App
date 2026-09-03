@@ -14,7 +14,6 @@ import {
 } from '../types/reading';
 import { AuthContext } from './AuthContext';
 import { readingProgressService } from '../services/readingProgressService';
-import { bookshelfService } from '../services/bookshelfService';
 import { reviewService } from '../services/reviewService';
 import { getReadingContentForBook } from '../data/reading/bookReadingRegistry';
 
@@ -181,40 +180,8 @@ export const ReadingProgressProvider: React.FC<{ children: ReactNode }> = ({ chi
           return next;
         });
 
-        // Persist to backend
+        // Persist to backend reading progress
         readingProgressService.saveProgress(initialRecord).catch(() => {});
-
-        // Add to bookshelf as READING if not already present
-        const cleanId = book.key.replace('/works/', '').trim();
-        bookshelfService
-          .getBookshelf()
-          .then((res) => {
-            const item = res.items.find(
-              (i) =>
-                i.book.openlibrary_work_id === cleanId ||
-                i.book.openlibrary_work_id === book.key
-            );
-            if (!item) {
-              bookshelfService
-                .addToBookshelf({
-                  openlibrary_work_id: cleanId,
-                  title: book.title,
-                  authors: book.authors,
-                  cover_url: book.coverUrl,
-                  first_publish_year: book.firstPublishYear,
-                  description: book.description,
-                  edition_count: book.editionCount,
-                  subjects: book.subjects,
-                  status: 'READING',
-                  current_page: 0,
-                  total_pages: content.lessons.length,
-                })
-                .catch(() => {});
-            } else if (item.status === 'WANT_TO_READ') {
-              bookshelfService.updateStatus(item.id, 'READING').catch(() => {});
-            }
-          })
-          .catch(() => {});
       }
     },
     [activeSessions, authContext, isAuthenticated, user]
@@ -414,38 +381,6 @@ export const ReadingProgressProvider: React.FC<{ children: ReactNode }> = ({ chi
             })
             .catch(() => {});
         }
-
-        bookshelfService
-          .getBookshelf()
-          .then((res) => {
-            const item = res.items.find(
-              (i) =>
-                i.book.openlibrary_work_id === cleanId ||
-                i.book.openlibrary_work_id === currentBook.key
-            );
-            if (item) {
-              if (item.status !== 'COMPLETED') {
-                bookshelfService.updateStatus(item.id, 'COMPLETED').catch(() => {});
-              }
-            } else {
-              bookshelfService
-                .addToBookshelf({
-                  openlibrary_work_id: cleanId,
-                  title: currentBook.title,
-                  authors: currentBook.authors,
-                  cover_url: currentBook.coverUrl,
-                  first_publish_year: currentBook.firstPublishYear,
-                  description: currentBook.description,
-                  edition_count: currentBook.editionCount,
-                  subjects: currentBook.subjects,
-                  status: 'COMPLETED',
-                  current_page: 100,
-                  total_pages: 100,
-                })
-                .catch(() => {});
-            }
-          })
-          .catch(() => {});
 
         return currentBook;
       });

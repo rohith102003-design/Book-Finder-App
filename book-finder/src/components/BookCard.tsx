@@ -43,6 +43,8 @@ export const BookCard: React.FC<BookCardProps> = ({
       setIsAdding(true);
       try {
         await addToBookshelf(book);
+      } catch (err) {
+        console.error('Failed to add book to bookshelf:', err);
       } finally {
         setIsAdding(false);
       }

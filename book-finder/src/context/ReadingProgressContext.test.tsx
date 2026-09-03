@@ -82,4 +82,19 @@ describe('ReadingProgressContext', () => {
     expect(result.current.completedBooks[0].review?.rating).toBe(5);
     expect(result.current.completedBooks[0].review?.reviewText).toBe('Pure magic!');
   });
+
+  it('proves that startOrContinueReading does not modify bookshelf', () => {
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <ReadingProgressProvider>{children}</ReadingProgressProvider>
+    );
+
+    const { result } = renderHook(() => useReadingProgress(), { wrapper });
+
+    act(() => {
+      result.current.startOrContinueReading(mockBook);
+    });
+
+    expect(result.current.activeReadingBook?.key).toBe(mockBook.key);
+    expect(result.current.isBookReading(mockBook.key)).toBe(true);
+  });
 });

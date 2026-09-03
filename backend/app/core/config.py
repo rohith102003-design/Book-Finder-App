@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
 
+    # Cookie Configuration
+    COOKIE_SAMESITE: Optional[str] = None
+    COOKIE_SECURE: Optional[bool] = None
+
     # Email Verification & SMTP Delivery (Optional / Configurable)
     REQUIRE_EMAIL_VERIFICATION: bool = False
     EMAIL_VERIFICATION_TOKEN_EXPIRE_MINUTES: int = 15
